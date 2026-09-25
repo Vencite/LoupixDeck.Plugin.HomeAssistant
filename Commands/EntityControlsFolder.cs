@@ -32,10 +32,12 @@ internal sealed class EntityControlsFolder(IPluginHost host, HomeAssistantComman
     public IReadOnlyList<FolderEntry> BuildEntries()
     {
         HomeAssistantState? entity = access.FindEntity(entityId);
-        if (entity is null) return [new FolderEntry { SlotIndex = 0, Text = "No state" }];
+        if (entity is null) return [new FolderEntry { SlotIndex = 0, Text = "No state", TextSize = 12,
+            Image = FolderIcons.Get("status") }];
         string label = entity.Domain == "climate" && EntityCapabilities.Number(entity, "temperature") is { } temp
             ? $"{entity.State} · {temp:0.#}°" : entity.State;
-        if (access.Status is { } status) label = status;
+        string? connectionStatus = access.Status;
+        if (connectionStatus is { } status) label = status;
         IReadOnlyList<MenuNode> all = EntityMenu.Actions(entity, entity.FriendlyName, includeFolder: false);
         MenuNode[] modes = all.Where(node => node.Parameters.TryGetValue("EntityId", out string? value) &&
             value.Contains("|set_hvac_mode|", StringComparison.Ordinal)).ToArray();
@@ -45,27 +47,64 @@ internal sealed class EntityControlsFolder(IPluginHost host, HomeAssistantComman
         int capacity = Math.Max(1, host.FolderGrid.TotalSlots - 4);
         int maxPage = actions.Count == 0 ? 0 : (actions.Count - 1) / capacity;
         _page = Math.Min(_page, maxPage);
-        List<FolderEntry> entries = [new() { SlotIndex = host.FolderGrid.SlotForIndex(0), Text = label }];
+        List<FolderEntry> entries = [new() { SlotIndex = host.FolderGrid.SlotForIndex(0),
+            Text = ShortLabel(label), TextSize = 11,
+            Image = FolderIcons.Get(connectionStatus is null ? "status" : "offline") }];
         int index = 1;
         foreach (MenuNode node in actions.Skip(_page * capacity).Take(capacity))
         {
             int slot = host.FolderGrid.SlotForIndex(index++);
             if (slot < 0) break;
             if (node.Children.Count > 0)
-                entries.Add(new FolderEntry { SlotIndex = slot, Text = node.Name,
-                    OpensFolder = new EntityControlsFolder(host, access, commands, entityId, modesOnly: true) });
+                entries.Add(new FolderEntry { SlotIndex = slot, Text = "Mode", TextSize = 12,
+                    Image = FolderIcons.Get("folder"), OpensFolder = new EntityControlsFolder(host, access, commands, entityId, modesOnly: true) });
             else
             {
                 string text = node.Name[(node.Name.LastIndexOf('·') + 1)..].Trim();
-                entries.Add(new FolderEntry { SlotIndex = slot, Text = text, OnPress = () => Execute(node) });
+                string caption = ShortLabel(text);
+                entries.Add(new FolderEntry { SlotIndex = slot, Text = caption, TextSize = caption.Length > 8 ? 11 : 12,
+                    Image = FolderIcons.Get(IconFor(node, text)), OnPress = () => Execute(node) });
             }
         }
-        if (_page > 0) entries.Add(new FolderEntry { SlotIndex = host.FolderGrid.SlotForIndex(index++), Text = "Previous",
+        if (_page > 0) entries.Add(new FolderEntry { SlotIndex = host.FolderGrid.SlotForIndex(index++), Text = "Prev", TextSize = 12, Image = FolderIcons.Get("left"),
             OnPress = () => { _page--; Refresh(); return Task.CompletedTask; } });
-        if (_page < maxPage) entries.Add(new FolderEntry { SlotIndex = host.FolderGrid.SlotForIndex(index), Text = "Next",
+        if (_page < maxPage) entries.Add(new FolderEntry { SlotIndex = host.FolderGrid.SlotForIndex(index), Text = "Next", TextSize = 12, Image = FolderIcons.Get("right"),
             OnPress = () => { _page++; Refresh(); return Task.CompletedTask; } });
         return entries;
     }
+
+    private static string ShortLabel(string value)
+    {
+        if (value.StartsWith("Brightness ", StringComparison.Ordinal) ||
+            value.StartsWith("Position ", StringComparison.Ordinal) ||
+            value.StartsWith("Volume ", StringComparison.Ordinal) ||
+            value.StartsWith("Speed ", StringComparison.Ordinal)) value = value[(value.IndexOf(' ') + 1)..];
+        value = value switch { "Temperature +" => "Temp +", "Temperature −" => "Temp −",
+            "Increase" => "More", "Decrease" => "Less", "Unavailable" => "Unavailable", _ => value };
+        return value.Length <= 10 ? value : value[..9] + "…";
+    }
+
+    private static string IconFor(MenuNode node, string action) => node.CommandName switch
+    {
+        IncreaseTemperatureCommand.Name => "up",
+        DecreaseTemperatureCommand.Name => "down",
+        ToggleEntityCommand.Name or TurnOnEntityCommand.Name or TurnOffEntityCommand.Name => "power",
+        ActivateSceneCommand.Name or RunScriptCommand.Name => "play",
+        PressButtonCommand.Name => "press",
+        _ => action switch
+        {
+            "Open" => "up", "Close" => "down", "Stop" => "stop",
+            "Lock" => "lock", "Unlock" => "unlock", "Press" => "press",
+            "Play" => "play", "Pause" => "pause", "Previous" => "prev", "Next" => "next",
+            "Increase" => "up", "Decrease" => "down",
+            "heat" => "heat", "cool" => "cool", "off" => "power",
+            _ when action.StartsWith("Brightness", StringComparison.Ordinal) => "brightness",
+            _ when action.StartsWith("Volume", StringComparison.Ordinal) => "value",
+            _ when action.StartsWith("Position", StringComparison.Ordinal) => "value",
+            _ when action.StartsWith("Speed", StringComparison.Ordinal) => "value",
+            _ => "mode"
+        }
+    };
 
     private Task Execute(MenuNode node)
     {

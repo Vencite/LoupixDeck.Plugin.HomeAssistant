@@ -23,6 +23,7 @@ The token is masked in the editor and saved by LoupixDeck. Never put it in comma
 ## Assign buttons and dials
 
 - **Buttons:** open the action picker → **Home Assistant** → area → entity type → entity → action. Multi-action entities offer **Controls folder**: assign it to a button, then tap it on the deck to open live controls. Hidden, disabled and auxiliary entities are omitted. Available actions follow the entity's capabilities.
+- **Status:** assign **Connection status** from the Home Assistant menu to show whether HA is connected and when entity data last updated.
 - **Sensors:** choose **Show state** for a read-only button; sensor values include units.
 - **Brightness dial:** open rotary presets and choose **entity · Brightness**. Each tick changes brightness by 5%; pressing toggles the light. Only dimmable lights get presets; the indicator shows the cached brightness.
 - **Other controls:** climate folders show temperature up/down buttons and a live HVAC mode subfolder. Covers, fans, media players, locks, input numbers and switches also have controls folders; each action remains assignable to its own button.
@@ -73,4 +74,4 @@ Use `[Uri]::EscapeDataString('{"brightness_pct":50}')` in PowerShell to encode a
 
 ## License
 
-MIT. Developed with AI assistance; see [LICENSE](LICENSE).
+Plugin code: MIT; see [LICENSE](LICENSE). The Home Assistant logo has a separate [asset attribution and license](LICENSES/home-assistant-logo.md). Developed with AI assistance.

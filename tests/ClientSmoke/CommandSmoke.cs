@@ -69,7 +69,7 @@ internal static class CommandSmoke
 
         // Execution forwards the entity id to the matching service call.
         List<IPluginCommand> commands = plugin.GetCommands().ToList();
-        Check(commands.Count == 13, "thirteen commands registered");
+        Check(commands.Count == 14, "fourteen commands registered");
         IPluginCommand toggle = commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.ToggleEntity");
         IPluginCommand call = commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.CallService");
         IPluginCommand show = commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.ShowEntity");
@@ -153,14 +153,16 @@ internal static class CommandSmoke
         IFolderProvider folder = host.OpenedFolder!;
         folder.OnEnter();
         var folderEntries = folder.BuildEntries();
-        Check(folderEntries.Any(entry => entry.Text == "HVAC mode" && entry.OpensFolder is not null) &&
-              folderEntries.Any(entry => entry.Text == "Temperature +") &&
-              folderEntries.Any(entry => entry.Text == "Temperature −"), "climate folder exposes live modes and temperature steps");
-        FolderEntry up = folderEntries.Single(entry => entry.Text == "Temperature +");
+        Check(folderEntries.Any(entry => entry.Text == "Mode" && entry.OpensFolder is not null) &&
+              folderEntries.Any(entry => entry.Text == "Temp +") &&
+              folderEntries.Any(entry => entry.Text == "Temp −"), "climate folder exposes live modes and temperature steps");
+        Check(folderEntries.All(entry => entry.Text.Length <= 10 && entry.Image is { Length: > 8 } image &&
+            image[0] == 0x89 && image[1] == (byte)'P'), "folder entries use short labels and embedded PNG icons");
+        FolderEntry up = folderEntries.Single(entry => entry.Text == "Temp +");
         await up.OnPress!();
         Check(server.LastRequest.GetProperty("service_data").GetProperty("temperature").GetDouble() == 21.5,
             "folder increases the cached climate target by its supported step");
-        FolderEntry modesEntry = folderEntries.Single(entry => entry.Text == "HVAC mode");
+        FolderEntry modesEntry = folderEntries.Single(entry => entry.Text == "Mode");
         var modeFolder = modesEntry.OpensFolder!;
         Check(modeFolder.BuildEntries().Any(entry => entry.Text == "heat"), "HVAC modes are live folder entries");
         folder.OnExit();
@@ -212,6 +214,16 @@ internal static class CommandSmoke
         }
 
 
+
+        var connection = (IDisplayImageCommand)commands.Single(command =>
+            command.Descriptor.CommandName == "HomeAssistant.ConnectionStatus");
+        var connectionCanvas = new RecordingCanvas();
+        Check(connection.RenderImage(Context(host), connectionCanvas) &&
+            connectionCanvas.Texts.Any(text => text.Text == "Connected") &&
+            connectionCanvas.Texts.Any(text => text.Text.Contains(':')),
+            "connection tile shows live status and last entity update time");
+        Check(plugin.Metadata.Icon is { Length: > 8 } logo && logo[0] == 0x89 && logo[1] == (byte)'P',
+            "plugin metadata contains the Home Assistant logo");
 
         // Rendering reads the cached state and stays synchronous.
         var activeCanvas = new RecordingCanvas();
@@ -313,12 +325,12 @@ internal static class CommandSmoke
         await Task.Delay(200, timeout.Token);
         int refreshBase = host.Refreshes.Count;
         await server.PublishStateChangeAsync(timeout.Token);
-        await UntilAsync(() => Task.FromResult(host.Refreshes.Count >= refreshBase + 7), timeout.Token);
+        await UntilAsync(() => Task.FromResult(host.Refreshes.Count >= refreshBase + 8), timeout.Token);
         Check(!host.Refreshes.Skip(refreshBase).Contains("HomeAssistant.ActivateScene"), "light changes leave scene buttons alone");
         int burstBase = host.Refreshes.Count;
         await server.PublishBurstAsync(timeout.Token);
         await Task.Delay(400, timeout.Token);
-        Check(host.Refreshes.Count - burstBase == 7, "burst coalesces into one relevant refresh pass");
+        Check(host.Refreshes.Count - burstBase == 8, "burst coalesces into one relevant refresh pass");
 
         var changedCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office"), changedCanvas);
@@ -329,6 +341,10 @@ internal static class CommandSmoke
         var offlineCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office"), offlineCanvas);
         Check(offlineCanvas.Texts[0].Text == "Offline", "disconnection is distinct from off and missing state");
+        var offlineConnection = new RecordingCanvas();
+        connection.RenderImage(Context(host), offlineConnection);
+        Check(offlineConnection.Texts.Any(text => text.Text == "Offline"),
+            "connection tile shows disconnection after shutdown");
         Console.WriteLine("Home Assistant command smoke check passed.");
     }
 

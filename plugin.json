@@ -3,6 +3,7 @@
   "name": "Home Assistant",
   "version": "0.1.0",
   "sdkVersion": "1.26.0",
+  "iconFile": "icon.png",
   "entryAssembly": "LoupixDeck.Plugin.HomeAssistant.dll",
   "platform": "All",
   "author": "Vencite",

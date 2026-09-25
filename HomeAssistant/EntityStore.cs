@@ -15,6 +15,7 @@ public sealed class EntityStore(HomeAssistantClient client, IPluginLogger logger
     private readonly List<HomeAssistantStateChangedEvent> _buffer = [];
     private Task? _resyncTask;
     private long _generation;
+    private DateTimeOffset? _lastUpdatedAt;
     private bool _attached;
     private bool _buffering;
     private bool _initialized;
@@ -28,6 +29,11 @@ public sealed class EntityStore(HomeAssistantClient client, IPluginLogger logger
     public bool IsInitialized
     {
         get { lock (_sync) return _initialized; }
+    }
+
+    public DateTimeOffset? LastUpdatedAt
+    {
+        get { lock (_sync) return _lastUpdatedAt; }
     }
 
     public int Count => Volatile.Read(ref _states).Count;
@@ -104,6 +110,7 @@ public sealed class EntityStore(HomeAssistantClient client, IPluginLogger logger
                     _buffer.Clear();
                     _buffering = false;
                     _initialized = true;
+                    _lastUpdatedAt = DateTimeOffset.UtcNow;
                 }
                 return true;
             }
@@ -157,6 +164,7 @@ public sealed class EntityStore(HomeAssistantClient client, IPluginLogger logger
             }
             if (!_initialized) return;
             applied = ApplyChange(_states, _removedAt, change);
+            if (applied) _lastUpdatedAt = DateTimeOffset.UtcNow;
         }
         if (applied) Notify(EntityChanged, change);
     }

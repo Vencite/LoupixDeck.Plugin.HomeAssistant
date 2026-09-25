@@ -13,6 +13,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Assets/FolderIcons/*.png" />
+    <EmbeddedResource Include="icon.png" />
+    <None Update="icon.png" CopyToOutputDirectory="PreserveNewest" />
     <PackageReference Include="LoupixDeck.PluginSdk" Version="1.26.0">
       <ExcludeAssets>runtime</ExcludeAssets>
     </PackageReference>

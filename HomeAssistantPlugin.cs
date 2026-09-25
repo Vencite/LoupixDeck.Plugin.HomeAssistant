@@ -36,7 +36,8 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
         EntityServiceCommand.Name,
         IncreaseTemperatureCommand.Name,
         DecreaseTemperatureCommand.Name,
-        OpenEntityControlsCommand.Name
+        OpenEntityControlsCommand.Name,
+        ConnectionStatusCommand.Name
     ];
 
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
@@ -64,8 +65,19 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
         Version = new Version(0, 1, 0),
         SdkVersion = SdkInfo.Version,
         Author = "Vencite",
-        Description = "Control Home Assistant entities directly from LoupixDeck."
+        Description = "Control Home Assistant entities directly from LoupixDeck.",
+        Icon = ReadPluginIcon()
     };
+
+    private static byte[]? ReadPluginIcon()
+    {
+        using Stream? stream = typeof(HomeAssistantPlugin).Assembly.GetManifestResourceStream(
+            "LoupixDeck.Plugin.HomeAssistant.icon.png");
+        if (stream is null) return null;
+        using var buffer = new MemoryStream();
+        stream.CopyTo(buffer);
+        return buffer.ToArray();
+    }
 
     // ───────── IPluginSettingsPage ─────────
 
@@ -181,7 +193,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
 
     public override IEnumerable<IPluginCommand> GetCommands()
     {
-        var access = _commandAccess ??= new HomeAssistantCommandAccess(GetClient, FindEntity, GetConnectionStatus);
+        var access = _commandAccess ??= new HomeAssistantCommandAccess(GetClient, FindEntity, GetConnectionStatus, GetLastEntityUpdate);
         return
         [
             new ToggleEntityCommand(access),
@@ -196,7 +208,8 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
             new BrightnessCommand(access),
             new IncreaseTemperatureCommand(access),
             new DecreaseTemperatureCommand(access),
-            new OpenEntityControlsCommand(access, GetCommands)
+            new OpenEntityControlsCommand(access, GetCommands),
+            new ConnectionStatusCommand(access)
         ];
     }
 
@@ -226,7 +239,8 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
             : EntityMenu.Build(store.GetSnapshot(), store.MenuMetadata);
 
         return Task.FromResult<IReadOnlyList<MenuNode>>(
-            [new MenuNode { Name = "Home Assistant", Children = children }]);
+            [new MenuNode { Name = "Home Assistant", Children =
+                [new MenuNode { Name = "Connection status", CommandName = ConnectionStatusCommand.Name }, ..children] }]);
     }
 
     // ───────── runtime access ─────────
@@ -234,6 +248,11 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
     private HomeAssistantClient? GetClient()
     {
         lock (_stateSync) return _client;
+    }
+
+    private DateTimeOffset? GetLastEntityUpdate()
+    {
+        lock (_stateSync) return _store?.LastUpdatedAt;
     }
 
     private HomeAssistantState? FindEntity(string entityId)
@@ -257,6 +276,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
         {
             if (_shuttingDown) return;
             _pendingRefresh.Add(ShowEntityCommand.Name);
+            _pendingRefresh.Add(ConnectionStatusCommand.Name);
             _pendingRefresh.Add(EntityServiceCommand.Name);
             _pendingRefresh.Add(OpenEntityControlsCommand.Name);
             if (domain == "climate")

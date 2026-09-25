@@ -9,7 +9,8 @@ namespace LoupixDeck.Plugin.HomeAssistant.Commands;
 internal sealed class HomeAssistantCommandAccess(
     Func<HomeAssistantClient?> client,
     Func<string, HomeAssistantState?> entity,
-    Func<string?>? status = null)
+    Func<string?>? status = null,
+    Func<DateTimeOffset?>? lastUpdated = null)
 {
     public event Action? Changed;
     public void NotifyChanged()
@@ -22,6 +23,7 @@ internal sealed class HomeAssistantCommandAccess(
     }
 
     public string? Status => status?.Invoke();
+    public DateTimeOffset? LastUpdatedAt => lastUpdated?.Invoke();
 
     public HomeAssistantClient? Client => client();
 
