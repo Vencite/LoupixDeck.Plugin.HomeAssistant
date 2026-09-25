@@ -13,6 +13,17 @@ artifacts/
 AGENTS.md
 docs/
 _references/
+.codemap/
+.agents/
+.codex/
+.claude/
+.cursor/
+.continue/
+.windsurf/
+.gemini/
+.opencode/
+.aider*
+CLAUDE.md
 
 # Local development helpers
 scripts/bootstrap-references.sh
@@ -24,9 +35,15 @@ scripts/deploy-dev.sh
 !.env.example
 *.local
 secrets/
+settings.json
+store.json
 
 # Logs
 *.log
+*.dump
+*.har
+*.pcap
+*.pcapng
 
 # OS
 .DS_Store
