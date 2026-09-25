@@ -212,7 +212,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
 
         IReadOnlyList<MenuNode> children = store is null || !store.IsInitialized
             ? [new MenuNode { Name = "Not connected" }]
-            : EntityMenu.Build(store.GetSnapshot());
+            : EntityMenu.Build(store.GetSnapshot(), store.MenuMetadata);
 
         return Task.FromResult<IReadOnlyList<MenuNode>>(
             [new MenuNode { Name = "Home Assistant", Children = children }]);
@@ -229,7 +229,9 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
     {
         EntityStore? store;
         lock (_stateSync) store = _store;
-        return store is not null && store.TryGet(entityId, out HomeAssistantState? state) ? state : null;
+        if (store is null || !store.TryGet(entityId, out HomeAssistantState? state) || state is null) return null;
+        return store.MenuMetadata.Entities.TryGetValue(entityId, out HomeAssistantMenuEntity? info)
+            ? state with { RegistryIcon = info.Icon } : state;
     }
 
     /// <summary>

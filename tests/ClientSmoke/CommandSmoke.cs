@@ -33,18 +33,28 @@ internal static class CommandSmoke
         await UntilAsync(async () =>
         {
             IReadOnlyList<MenuNode> nodes = await menu.GetMenuNodes(ButtonTargets.TouchButton);
-            return nodes.Any(node => node.Children.Any(child => child.Name == "Lights"));
+            return nodes.Any(node => node.Children.Any(area => area.Children.Any(child => child.Name == "Lights")));
         }, timeout.Token);
 
         // The dynamic menu mirrors the controllable domains of the cache, with the entity id baked
         // into the shared parameter of a stable command.
         IReadOnlyList<MenuNode> roots = await menu.GetMenuNodes(ButtonTargets.TouchButton);
+        Check(server.RegistryRequests == 3, "opening the picker uses cached registry metadata only");
         MenuNode group = roots.Single(node => node.Name == "Home Assistant");
         Check(group.Children.All(child => child.Name != "Not connected"), "connected menu");
-        MenuNode sensor = group.Children.Single(child => child.Name == "Sensors").Children.Single();
+        Check(group.Children.Any(child => child.Name == "Office") && group.Children.Any(child => child.Name == "Garden"),
+            "entities are grouped by Home Assistant area");
+        IReadOnlyList<MenuNode> domains = group.Children.SelectMany(area => area.Children).ToArray();
+        MenuNode sensor = domains.Single(child => child.Name == "Sensors").Children.Single();
         Check(sensor.Children.Single().CommandName == "HomeAssistant.ShowEntity", "sensor offers a display-only action");
 
-        MenuNode office = group.Children.Single(child => child.Name == "Lights").Children.Single(child => child.Name == "Office Light");
+        MenuNode office = group.Children.Single(child => child.Name == "Office").Children
+            .Single(child => child.Name == "Lights").Children.Single(child => child.Name == "Office Light");
+        Check(group.Children.Single(child => child.Name == "Office").Children
+            .Single(child => child.Name == "Switches").Children.Single().Name == "Kettle",
+            "device area is used when the entity has no direct area");
+        Check(!domains.SelectMany(domain => domain.Children).Any(entity => entity.Name == "Hidden"),
+            "hidden registry entities are excluded from the picker");
         Check(office.Children.Count == 3, "light offers three actions");
         Check(office.Children.Any(child => child.Name == "Office Light · Toggle" && child.CommandName == "HomeAssistant.ToggleEntity"),
             "light toggle leaf");
@@ -52,9 +62,9 @@ internal static class CommandSmoke
             "searchable action names include the entity name");
         Check(office.Children.All(child => child.Parameters["EntityId"] == "light.office"), "leaf bakes the entity id");
 
-        MenuNode movie = group.Children.Single(child => child.Name == "Scenes").Children.Single(child => child.Name == "Movie Night");
+        MenuNode movie = domains.Single(child => child.Name == "Scenes").Children.Single(child => child.Name == "Movie Night");
         Check(movie.Children.Single().CommandName == "HomeAssistant.ActivateScene", "scene has its own action");
-        Check(group.Children.Single(child => child.Name == "Buttons").Children.Single().Children.Single().CommandName == "HomeAssistant.PressButton",
+        Check(domains.Single(child => child.Name == "Buttons").Children.Single().Children.Single().CommandName == "HomeAssistant.PressButton",
             "button has its own action");
 
         // Execution forwards the entity id to the matching service call.
@@ -96,7 +106,17 @@ internal static class CommandSmoke
 
         var inactiveCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "switch.kettle"), inactiveCanvas);
-        Check(inactiveCanvas.Symbols.Contains("power"), "inactive switch renders a supported domain icon");
+        Check(inactiveCanvas.Symbols.Contains("star"), "registry icon overrides the switch domain icon");
+        var unavailableCanvas = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "switch.unavailable"), unavailableCanvas);
+        var unknownStateCanvas = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "switch.unknown"), unknownStateCanvas);
+        Check(unavailableCanvas.Texts[0].Color != inactiveCanvas.Texts[0].Color &&
+              unknownStateCanvas.Texts[0].Color != inactiveCanvas.Texts[0].Color &&
+              unknownStateCanvas.Texts[0].Color != unavailableCanvas.Texts[0].Color,
+            "unavailable, unknown and off have distinct visual treatments");
+        CheckLayout(unavailableCanvas, "unavailable entity layout");
+        CheckLayout(unknownStateCanvas, "unknown entity layout");
 
         var sensorCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)show).RenderImage(Context(host, "sensor.temp"), sensorCanvas);
@@ -144,7 +164,10 @@ internal static class CommandSmoke
 
         var entityIconCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.desk"), entityIconCanvas);
-        Check(entityIconCanvas.Symbols.Contains("desk-lamp"), "entity icon attribute is automatic");
+        Check(entityIconCanvas.Symbols.Contains("lightbulb-on"), "unsupported HA icon falls back without a dashed placeholder");
+        var customEntityIconCanvas = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.custom"), customEntityIconCanvas);
+        Check(customEntityIconCanvas.Symbols.Contains("flash"), "supported HA icon attribute is used");
 
         var hiddenCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office", "False"), hiddenCanvas);
@@ -153,8 +176,8 @@ internal static class CommandSmoke
         Check(hiddenCanvas.Texts[0].Top < activeCanvas.Texts[0].Top, "hidden icon moves text up");
 
         var shorthandCanvas = new RecordingCanvas();
-        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office", "mdi:ceiling-light"), shorthandCanvas);
-        Check(shorthandCanvas.Symbols.Contains("ceiling-light"), "lone icon value is read as the icon");
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office", "mdi:flash"), shorthandCanvas);
+        Check(shorthandCanvas.Symbols.Contains("flash"), "lone icon value is read as the icon");
 
         // Layout zones never overlap: indicator, state text and the friendly name each own
         // a disjoint vertical band, even for a long friendly name.
@@ -227,6 +250,8 @@ internal static class CommandSmoke
 
     private sealed class ControlServer(HttpListener listener, CancellationToken cancellationToken)
     {
+        private int _registryRequests;
+        public int RegistryRequests => Volatile.Read(ref _registryRequests);
         private readonly List<ServiceCall> _calls = [];
         private readonly TaskCompletionSource<int> _subscription = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private WebSocket? _socket;
@@ -315,6 +340,35 @@ internal static class CommandSmoke
                         case "get_states":
                             await SendAsync(socket, new { id, type = "result", success = true, result = States() });
                             break;
+                        case "config/entity_registry/list":
+                            Interlocked.Increment(ref _registryRequests);
+                            await SendAsync(socket, new { id, type = "result", success = true, result = new object[]
+                            {
+                                new { entity_id = "light.office", area_id = "office", device_id = (string?)null,
+                                    name = "Office Light", icon = (string?)null, hidden_by = (string?)null,
+                                    disabled_by = (string?)null, entity_category = (string?)null },
+                                new { entity_id = "sensor.temp", area_id = "garden", device_id = (string?)null,
+                                    name = "Temperature", icon = (string?)null, hidden_by = (string?)null,
+                                    disabled_by = (string?)null, entity_category = (string?)null },
+                                new { entity_id = "switch.kettle", area_id = (string?)null, device_id = "kettle-device",
+                                    name = "Kettle", icon = "mdi:star", hidden_by = (string?)null,
+                                    disabled_by = (string?)null, entity_category = (string?)null },
+                                new { entity_id = "switch.hidden", area_id = "office", device_id = (string?)null,
+                                    name = "Hidden", icon = (string?)null, hidden_by = "user",
+                                    disabled_by = (string?)null, entity_category = (string?)null }
+                            } });
+                            break;
+                        case "config/device_registry/list":
+                            Interlocked.Increment(ref _registryRequests);
+                            await SendAsync(socket, new { id, type = "result", success = true,
+                                result = new[] { new { id = "kettle-device", area_id = "office" } } });
+                            break;
+                        case "config/area_registry/list":
+                            Interlocked.Increment(ref _registryRequests);
+                            await SendAsync(socket, new { id, type = "result", success = true,
+                                result = new[] { new { area_id = "office", name = "Office" },
+                                    new { area_id = "garden", name = "Garden" } } });
+                            break;
                         case "call_service":
                             string domain = message.RootElement.GetProperty("domain").GetString() ?? "";
                             string service = message.RootElement.GetProperty("service").GetString() ?? "";
@@ -345,8 +399,12 @@ internal static class CommandSmoke
         [
             State("light.office", "on", "Office Light"),
             State("light.desk", "on", "Desk", "mdi:desk-lamp"),
+            State("light.custom", "on", "Custom", "mdi:flash"),
             State("light.long_name", "on", "Bardzo Długa Nazwa Encji Testowej Do Sprawdzenia"),
             State("switch.kettle", "off", "Kettle"),
+            State("switch.unavailable", "unavailable", "Unavailable Switch"),
+            State("switch.unknown", "unknown", "Unknown Switch"),
+            State("switch.hidden", "off", "Hidden"),
             State("scene.movie", "on", "Movie Night"),
             State("script.goodnight", "off", "Goodnight"),
             State("button.doorbell", "unknown", "Doorbell"),
@@ -464,11 +522,11 @@ internal static class CommandSmoke
 
         public void DrawText(string text, int x, int y, int width, int height, PluginColor color, float fontSize,
             bool bold = false, bool italic = false, bool centered = true, bool outlined = false,
-            PluginColor outlineColor = default) => Texts.Add(new TextBox(text, y, height, fontSize));
+            PluginColor outlineColor = default) => Texts.Add(new TextBox(text, y, height, fontSize, color));
 
         public void DrawText(string text, int x, int y, int width, int height, PluginColor color, float fontSize,
             TextHAlign hAlign, TextVAlign vAlign, bool bold = false, bool italic = false, bool outlined = false,
-            PluginColor outlineColor = default) => Texts.Add(new TextBox(text, y, height, fontSize));
+            PluginColor outlineColor = default) => Texts.Add(new TextBox(text, y, height, fontSize, color));
 
         public void FillCircle(int centerX, int centerY, int radius, PluginColor color)
         {
@@ -535,5 +593,5 @@ internal static class CommandSmoke
             $"{name} (name inside the button)");
     }
 
-    private sealed record TextBox(string Text, int Top, int Height, float FontSize);
+    private sealed record TextBox(string Text, int Top, int Height, float FontSize, PluginColor Color);
 }

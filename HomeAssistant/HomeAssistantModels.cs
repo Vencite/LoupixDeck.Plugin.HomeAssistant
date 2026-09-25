@@ -9,6 +9,7 @@ public sealed record HomeAssistantState(
     DateTimeOffset LastChanged,
     DateTimeOffset LastUpdated)
 {
+    public string? RegistryIcon { get; init; }
     /// <summary>The domain part of <see cref="EntityId"/>, for example <c>light</c>.</summary>
     public string Domain
     {
@@ -32,6 +33,20 @@ public sealed record HomeAssistantState(
             return EntityId;
         }
     }
+}
+
+public sealed record HomeAssistantMenuEntity(string? AreaId, string? DeviceId, string? Name,
+    string? Icon, bool Hidden, bool Disabled, bool Auxiliary);
+
+public sealed record HomeAssistantMenuMetadata(
+    IReadOnlyDictionary<string, HomeAssistantMenuEntity> Entities,
+    IReadOnlyDictionary<string, string> DeviceAreas,
+    IReadOnlyDictionary<string, string> AreaNames)
+{
+    public static HomeAssistantMenuMetadata Empty { get; } = new(
+        new Dictionary<string, HomeAssistantMenuEntity>(),
+        new Dictionary<string, string>(),
+        new Dictionary<string, string>());
 }
 
 public sealed record HomeAssistantStateChangedEvent(

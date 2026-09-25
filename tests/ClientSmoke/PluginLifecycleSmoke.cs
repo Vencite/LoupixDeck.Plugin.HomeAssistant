@@ -322,6 +322,10 @@ internal static class PluginLifecycleSmoke
                         });
                         if (token == "good-b") GoodActive.TrySetResult();
                     }
+                    else if (type.StartsWith("config/", StringComparison.Ordinal))
+                    {
+                        await SendAsync(socket, new { id, type = "result", success = true, result = Array.Empty<object>() });
+                    }
                     else
                     {
                         await SendAsync(socket, new { id, type = "result", success = true, result = (object?)null });

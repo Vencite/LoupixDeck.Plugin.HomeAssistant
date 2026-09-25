@@ -82,6 +82,7 @@ internal static class EntityStoreSmoke
                 int snapshotId = await ReadRequestIdAsync(socket, "get_states");
                 await SendAsync(socket, new { id = snapshotId, type = "result", success = true,
                     result = new[] { State("sensor.alpha", "snapshot", 2), State("sensor.beta", "old", 1), State("sensor.delta", "present", 2) } });
+                await AnswerRegistryRequestsAsync(socket);
                 await EventAsync(socket, subscriptionId, "sensor.transition", null, State("sensor.transition", "boundary", 4), 4);
 
                 await releaseLive.Task.WaitAsync(timeout.Token);
@@ -103,6 +104,7 @@ internal static class EntityStoreSmoke
                 int snapshotId = await ReadRequestIdAsync(socket, "get_states");
                 await SendAsync(socket, new { id = snapshotId, type = "result", success = true,
                     result = new[] { State("sensor.alpha", "resynced", 10), State("sensor.zeta", "new", 10) } });
+                await AnswerRegistryRequestsAsync(socket);
                 byte[] buffer = new byte[64];
                 ValueWebSocketReceiveResult close = await socket.ReceiveAsync(buffer.AsMemory(), timeout.Token);
                 Check(close.MessageType == WebSocketMessageType.Close, "reconnect session clean close");
@@ -128,6 +130,16 @@ internal static class EntityStoreSmoke
             using JsonDocument request = await ReadAsync(socket);
             Check(request.RootElement.GetProperty("type").GetString() == expectedType, expectedType);
             return request.RootElement.GetProperty("id").GetInt32();
+        }
+
+        async Task AnswerRegistryRequestsAsync(WebSocket socket)
+        {
+            foreach (string type in new[] { "config/entity_registry/list", "config/device_registry/list",
+                         "config/area_registry/list" })
+            {
+                int id = await ReadRequestIdAsync(socket, type);
+                await SendAsync(socket, new { id, type = "result", success = true, result = Array.Empty<object>() });
+            }
         }
 
         async Task EventAsync(WebSocket socket, int id, string entityId, object? oldState, object? newState, int second) =>

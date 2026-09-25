@@ -30,17 +30,35 @@ internal static class EntityMenu
         ["switch"] = "Switches"
     };
 
-    public static IReadOnlyList<MenuNode> Build(IReadOnlyList<HomeAssistantState> snapshot)
+    public static IReadOnlyList<MenuNode> Build(IReadOnlyList<HomeAssistantState> snapshot,
+        HomeAssistantMenuMetadata? metadata = null)
+    {
+        metadata ??= HomeAssistantMenuMetadata.Empty;
+        HomeAssistantState[] visible = snapshot.Where(state => Domains.ContainsKey(state.Domain) &&
+            (!metadata.Entities.TryGetValue(state.EntityId, out HomeAssistantMenuEntity? info) ||
+             !(info.Hidden || info.Disabled || info.Auxiliary))).ToArray();
+
+        if (metadata.AreaNames.Count == 0) return BuildDomains(visible, metadata);
+
+        return visible.GroupBy(state => AreaName(state, metadata), StringComparer.OrdinalIgnoreCase)
+            .OrderBy(group => group.Key == "Other" ? 1 : 0)
+            .ThenBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new MenuNode { Name = group.Key, Children = BuildDomains(group, metadata) })
+            .ToArray();
+    }
+
+    private static IReadOnlyList<MenuNode> BuildDomains(IEnumerable<HomeAssistantState> states,
+        HomeAssistantMenuMetadata metadata)
     {
         List<MenuNode> folders = [];
-        foreach (IGrouping<string, HomeAssistantState> group in snapshot
-                     .Where(state => Domains.ContainsKey(state.Domain))
+        foreach (IGrouping<string, HomeAssistantState> group in states
                      .GroupBy(state => state.Domain)
                      .OrderBy(group => group.Key, StringComparer.Ordinal))
         {
             List<MenuNode> entities = group
-                .OrderBy(state => state.FriendlyName, StringComparer.OrdinalIgnoreCase)
-                .Select(state => new MenuNode { Name = state.FriendlyName, Children = Actions(state) })
+                .OrderBy(state => EntityName(state, metadata), StringComparer.OrdinalIgnoreCase)
+                .Select(state => new MenuNode { Name = EntityName(state, metadata),
+                    Children = Actions(state, EntityName(state, metadata)) })
                 .ToList();
             if (entities.Count > 0)
                 folders.Add(new MenuNode { Name = Domains[group.Key], Children = entities });
@@ -48,23 +66,36 @@ internal static class EntityMenu
         return folders;
     }
 
-    private static IReadOnlyList<MenuNode> Actions(HomeAssistantState entity) => entity.Domain switch
+    private static string EntityName(HomeAssistantState state, HomeAssistantMenuMetadata metadata) =>
+        state.FriendlyName == state.EntityId && metadata.Entities.TryGetValue(state.EntityId, out var info) &&
+        !string.IsNullOrWhiteSpace(info.Name) ? info.Name : state.FriendlyName;
+
+    private static string AreaName(HomeAssistantState state, HomeAssistantMenuMetadata metadata)
     {
-        "sensor" or "binary_sensor" => [Leaf(entity, "Show state", ShowEntityCommand.Name)],
-        "scene" => [Leaf(entity, "Activate", ActivateSceneCommand.Name)],
-        "script" => [Leaf(entity, "Run", RunScriptCommand.Name)],
-        "button" => [Leaf(entity, "Press", PressButtonCommand.Name)],
+        if (!metadata.Entities.TryGetValue(state.EntityId, out var info)) return "Other";
+        string? areaId = info.AreaId;
+        if (areaId is null && info.DeviceId is not null)
+            metadata.DeviceAreas.TryGetValue(info.DeviceId, out areaId);
+        return areaId is not null && metadata.AreaNames.TryGetValue(areaId, out string? name) ? name : "Other";
+    }
+
+    private static IReadOnlyList<MenuNode> Actions(HomeAssistantState entity, string name) => entity.Domain switch
+    {
+        "sensor" or "binary_sensor" => [Leaf(entity, name, "Show state", ShowEntityCommand.Name)],
+        "scene" => [Leaf(entity, name, "Activate", ActivateSceneCommand.Name)],
+        "script" => [Leaf(entity, name, "Run", RunScriptCommand.Name)],
+        "button" => [Leaf(entity, name, "Press", PressButtonCommand.Name)],
         _ =>
         [
-            Leaf(entity, "Toggle", ToggleEntityCommand.Name),
-            Leaf(entity, "On", TurnOnEntityCommand.Name),
-            Leaf(entity, "Off", TurnOffEntityCommand.Name)
+            Leaf(entity, name, "Toggle", ToggleEntityCommand.Name),
+            Leaf(entity, name, "On", TurnOnEntityCommand.Name),
+            Leaf(entity, name, "Off", TurnOffEntityCommand.Name)
         ]
     };
 
-    private static MenuNode Leaf(HomeAssistantState entity, string action, string commandName) => new()
+    private static MenuNode Leaf(HomeAssistantState entity, string name, string action, string commandName) => new()
     {
-        Name = $"{entity.FriendlyName} · {action}",
+        Name = $"{name} · {action}",
         CommandName = commandName,
         Parameters = new Dictionary<string, string> { ["EntityId"] = entity.EntityId }
     };

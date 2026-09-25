@@ -10,6 +10,7 @@ public sealed class EntityStore(HomeAssistantClient client, IPluginLogger logger
     private readonly SemaphoreSlim _synchronizationGate = new(1, 1);
     private readonly CancellationTokenSource _stop = new();
     private ConcurrentDictionary<string, HomeAssistantState> _states = new(StringComparer.Ordinal);
+    private HomeAssistantMenuMetadata _menuMetadata = HomeAssistantMenuMetadata.Empty;
     private Dictionary<string, DateTimeOffset> _removedAt = new(StringComparer.Ordinal);
     private readonly List<HomeAssistantStateChangedEvent> _buffer = [];
     private Task? _resyncTask;
@@ -35,6 +36,8 @@ public sealed class EntityStore(HomeAssistantClient client, IPluginLogger logger
         Volatile.Read(ref _states).TryGetValue(entityId, out state);
 
     public IReadOnlyList<HomeAssistantState> GetSnapshot() => Volatile.Read(ref _states).Values.ToArray();
+
+    public HomeAssistantMenuMetadata MenuMetadata => Volatile.Read(ref _menuMetadata);
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
@@ -77,6 +80,13 @@ public sealed class EntityStore(HomeAssistantClient client, IPluginLogger logger
             {
                 await client.SubscribeStateChangesAsync(cancellationToken).ConfigureAwait(false);
                 IReadOnlyList<HomeAssistantState> snapshot = await client.GetStatesAsync(cancellationToken).ConfigureAwait(false);
+                HomeAssistantMenuMetadata metadata;
+                try { metadata = await client.GetMenuMetadataAsync(cancellationToken).ConfigureAwait(false); }
+                catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+                {
+                    logger.Warn($"Home Assistant registry metadata unavailable ({ex.GetType().Name}); using entity states only.");
+                    metadata = HomeAssistantMenuMetadata.Empty;
+                }
                 var replacement = new ConcurrentDictionary<string, HomeAssistantState>(StringComparer.Ordinal);
                 foreach (HomeAssistantState state in snapshot)
                     replacement[state.EntityId] = state;
@@ -89,6 +99,7 @@ public sealed class EntityStore(HomeAssistantClient client, IPluginLogger logger
                     foreach (HomeAssistantStateChangedEvent change in _buffer)
                         ApplyChange(replacement, removedAt, change);
                     _removedAt = removedAt;
+                    Volatile.Write(ref _menuMetadata, metadata);
                     Volatile.Write(ref _states, replacement);
                     _buffer.Clear();
                     _buffering = false;
@@ -128,6 +139,7 @@ public sealed class EntityStore(HomeAssistantClient client, IPluginLogger logger
         _buffer.Clear();
         _removedAt.Clear();
         Volatile.Write(ref _states, new ConcurrentDictionary<string, HomeAssistantState>(StringComparer.Ordinal));
+        Volatile.Write(ref _menuMetadata, HomeAssistantMenuMetadata.Empty);
         _initialized = false;
         _buffering = true;
     }

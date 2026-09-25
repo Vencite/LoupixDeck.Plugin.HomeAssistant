@@ -85,6 +85,54 @@ public sealed class HomeAssistantClient(IPluginLogger logger) : IAsyncDisposable
         }
     }
 
+    public async Task<HomeAssistantMenuMetadata> GetMenuMetadataAsync(CancellationToken cancellationToken = default)
+    {
+        (_, JsonElement entitiesResult) = await SendRequestAsync(
+            id => new { id, type = "config/entity_registry/list" }, false, cancellationToken).ConfigureAwait(false);
+        (_, JsonElement devicesResult) = await SendRequestAsync(
+            id => new { id, type = "config/device_registry/list" }, false, cancellationToken).ConfigureAwait(false);
+        (_, JsonElement areasResult) = await SendRequestAsync(
+            id => new { id, type = "config/area_registry/list" }, false, cancellationToken).ConfigureAwait(false);
+        if (entitiesResult.ValueKind != JsonValueKind.Array || devicesResult.ValueKind != JsonValueKind.Array ||
+            areasResult.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("Home Assistant registry response has invalid structure.");
+
+        var entities = new Dictionary<string, HomeAssistantMenuEntity>(StringComparer.Ordinal);
+        foreach (JsonElement entry in entitiesResult.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object) continue;
+            string? id = ReadOptionalString(entry, "entity_id");
+            if (id is null) continue;
+            entities[id] = new HomeAssistantMenuEntity(
+                ReadOptionalString(entry, "area_id"), ReadOptionalString(entry, "device_id"),
+                ReadOptionalString(entry, "name"), ReadOptionalString(entry, "icon"),
+                HasValue(entry, "hidden_by"), HasValue(entry, "disabled_by"), HasValue(entry, "entity_category"));
+        }
+
+        var deviceAreas = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (JsonElement entry in devicesResult.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object) continue;
+            string? id = ReadOptionalString(entry, "id");
+            string? area = ReadOptionalString(entry, "area_id");
+            if (id is not null && area is not null) deviceAreas[id] = area;
+        }
+
+        var areaNames = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (JsonElement entry in areasResult.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object) continue;
+            string? id = ReadOptionalString(entry, "area_id");
+            string? name = ReadOptionalString(entry, "name");
+            if (id is not null && name is not null) areaNames[id] = name;
+        }
+        return new HomeAssistantMenuMetadata(entities, deviceAreas, areaNames);
+    }
+
+    private static bool HasValue(JsonElement entry, string name) =>
+        entry.TryGetProperty(name, out JsonElement value) && value.ValueKind is not
+            (JsonValueKind.Null or JsonValueKind.Undefined);
+
     public async Task SubscribeStateChangesAsync(CancellationToken cancellationToken = default)
     {
         await _subscriptionGate.WaitAsync(cancellationToken).ConfigureAwait(false);

@@ -19,7 +19,22 @@ internal static class EntityButtonRenderer
 
     private static readonly PluginColor Active = new(255, 193, 7);
     private static readonly PluginColor Inactive = new(158, 158, 158);
+    private static readonly PluginColor Unavailable = new(220, 95, 95);
+    private static readonly PluginColor Unknown = new(100, 165, 220);
     private static readonly PluginColor Missing = new(110, 110, 110);
+    // ponytail: mirror the host's curated ids until the SDK exposes symbol validation; unknown MDI names draw a dashed box.
+    private static readonly HashSet<string> HostSymbols = new((
+        "play pause stop record skip-previous skip-next rewind fast-forward repeat shuffle eject movie-open-outline " +
+        "volume-high volume-medium volume-low volume-off volume-mute microphone microphone-off headphones speaker music equalizer tune " +
+        "camera camera-off video video-off webcam monitor monitor-screenshot broadcast television cast " +
+        "lightbulb lightbulb-on lightbulb-off white-balance-sunny weather-night brightness-6 flash flashlight " +
+        "power power-plug cog restart sleep lock lock-open folder folder-open file home web magnify delete refresh sync " +
+        "download upload content-copy content-paste content-cut content-save email message chat phone bell bell-off send account " +
+        "arrow-up arrow-down arrow-left arrow-right chevron-up chevron-down chevron-left chevron-right undo redo exit-to-app " +
+        "menu dots-horizontal star star-outline heart heart-outline check close plus minus alert alert-circle information help-circle " +
+        "eye eye-off flag bookmark tag fire rocket-launch trophy gift thumb-up keyboard mouse desktop-classic laptop " +
+        "gamepad-variant wifi bluetooth usb printer calendar clock image palette pencil numeric-1-box numeric-2-box numeric-3-box"
+        ).Split(' ', StringSplitOptions.RemoveEmptyEntries), StringComparer.OrdinalIgnoreCase);
 
     public static bool Render(HomeAssistantState? state, string entityId, IRenderCanvas canvas) =>
         Render(state, entityId, null, canvas);
@@ -31,7 +46,13 @@ internal static class EntityButtonRenderer
         if (canvas.Width <= 0 || canvas.Height <= 0) return false;
 
         bool active = state is not null && IsActive(state.State);
-        PluginColor accent = state is null ? Missing : active ? Active : Inactive;
+        PluginColor accent = state?.State switch
+        {
+            null => Missing,
+            "unavailable" => Unavailable,
+            "unknown" => Unknown,
+            _ => active ? Active : Inactive
+        };
 
         int width = canvas.Width;
         int height = canvas.Height;
@@ -90,7 +111,7 @@ internal static class EntityButtonRenderer
             {
                 string fittedState = Ellipsize(stateText, boxWidth, stateFont, bold: false, canvas);
                 canvas.DrawText(fittedState, side, indicatorBottom + gap, boxWidth, stateHeight,
-                    Inactive, stateFont, TextHAlign.Center, TextVAlign.Middle);
+                    accent, stateFont, TextHAlign.Center, TextVAlign.Middle);
                 nameTop = indicatorBottom + gap + stateHeight + gap;
             }
             else nameTop = indicatorBottom + gap;
@@ -147,13 +168,16 @@ internal static class EntityButtonRenderer
     /// </summary>
     private static string? ResolveSymbol(HomeAssistantState? state, string? iconOverride)
     {
-        if (!string.IsNullOrWhiteSpace(iconOverride)) return iconOverride.Trim();
+        string? custom = SupportedSymbol(iconOverride);
+        if (custom is not null) return custom;
+        custom = SupportedSymbol(state?.RegistryIcon);
+        if (custom is not null) return custom;
         if (state is not null &&
             state.Attributes.ValueKind == System.Text.Json.JsonValueKind.Object &&
             state.Attributes.TryGetProperty("icon", out System.Text.Json.JsonElement icon) &&
             icon.ValueKind == System.Text.Json.JsonValueKind.String)
         {
-            string? custom = Commands.ButtonDisplayOptions.StripMdiPrefix(icon.GetString());
+            custom = SupportedSymbol(icon.GetString());
             if (custom is not null) return custom;
         }
         if (state is null) return null;
@@ -186,6 +210,12 @@ internal static class EntityButtonRenderer
             "button" => "power",
             _ => null
         };
+    }
+
+    private static string? SupportedSymbol(string? icon)
+    {
+        string? id = Commands.ButtonDisplayOptions.StripMdiPrefix(icon);
+        return id is not null && HostSymbols.Contains(id) ? id : null;
     }
 
     private static bool IsActive(string state) =>
