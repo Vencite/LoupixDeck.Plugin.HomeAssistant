@@ -1,0 +1,10 @@
+{
+  "id": "homeassistant",
+  "name": "Home Assistant",
+  "version": "0.1.0",
+  "sdkVersion": "1.26.0",
+  "entryAssembly": "LoupixDeck.Plugin.HomeAssistant.dll",
+  "platform": "All",
+  "author": "Vencite",
+  "description": "Control Home Assistant entities directly from LoupixDeck."
+}

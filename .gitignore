@@ -1,0 +1,33 @@
+# .NET
+bin/
+obj/
+artifacts/
+*.user
+*.suo
+
+# IDE
+.vscode/
+.idea/
+
+# Local AI / vibe-coding workspace
+AGENTS.md
+docs/
+_references/
+
+# Local development helpers
+scripts/bootstrap-references.sh
+scripts/deploy-dev.sh
+
+# Local config / secrets
+.env
+.env.*
+!.env.example
+*.local
+secrets/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
