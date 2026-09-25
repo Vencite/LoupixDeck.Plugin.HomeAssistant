@@ -9,7 +9,7 @@
 
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-    <DefaultItemExcludes>$(DefaultItemExcludes);_references/**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);_references/**;tests/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
