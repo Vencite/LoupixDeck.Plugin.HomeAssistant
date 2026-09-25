@@ -31,7 +31,8 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
         TurnOffEntityCommand.Name,
         ActivateSceneCommand.Name,
         RunScriptCommand.Name,
-        PressButtonCommand.Name
+        PressButtonCommand.Name,
+        ShowEntityCommand.Name
     ];
 
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
@@ -183,6 +184,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
             new ActivateSceneCommand(access),
             new RunScriptCommand(access),
             new PressButtonCommand(access),
+            new ShowEntityCommand(access),
             new CallServiceCommand(access)
         ];
     }

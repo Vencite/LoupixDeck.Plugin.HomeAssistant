@@ -64,6 +64,12 @@ internal static class EntityButtonRenderer
         int boxWidth = Math.Max(0, width - side * 2);
 
         string stateText = state?.State.Trim() ?? string.Empty;
+        if (state?.Domain == "sensor" &&
+            state.Attributes.ValueKind == System.Text.Json.JsonValueKind.Object &&
+            state.Attributes.TryGetProperty("unit_of_measurement", out System.Text.Json.JsonElement unit) &&
+            unit.ValueKind == System.Text.Json.JsonValueKind.String &&
+            unit.GetString() is { Length: > 0 } unitText)
+            stateText += $" {unitText}";
         int nameTop;
         if (stateText.Length > 0 && boxWidth > 0)
         {
@@ -133,10 +139,7 @@ internal static class EntityButtonRenderer
 
     /// <summary>
     /// Resolves the symbol for the indicator zone without any network I/O: an explicit per-button
-    /// icon wins, then the entity's own <c>icon</c> attribute. Unknown values simply mean "no
-    /// symbol" and fall back to the circle indicator; the host draws a placeholder for unknown ids
-    /// only when a symbol is actually passed. Covers #11 overrides; #1 owns the HA icon semantics
-    /// (device class / domain fallbacks).
+    /// icon wins, then the entity's own icon, device class and domain defaults.
     /// </summary>
     private static string? ResolveSymbol(HomeAssistantState? state, string? iconOverride)
     {
@@ -145,8 +148,38 @@ internal static class EntityButtonRenderer
             state.Attributes.ValueKind == System.Text.Json.JsonValueKind.Object &&
             state.Attributes.TryGetProperty("icon", out System.Text.Json.JsonElement icon) &&
             icon.ValueKind == System.Text.Json.JsonValueKind.String)
-            return Commands.ButtonDisplayOptions.StripMdiPrefix(icon.GetString());
-        return null;
+        {
+            string? custom = Commands.ButtonDisplayOptions.StripMdiPrefix(icon.GetString());
+            if (custom is not null) return custom;
+        }
+        if (state is null) return null;
+        if (state.Attributes.ValueKind == System.Text.Json.JsonValueKind.Object &&
+            state.Attributes.TryGetProperty("device_class", out System.Text.Json.JsonElement deviceClass) &&
+            deviceClass.ValueKind == System.Text.Json.JsonValueKind.String)
+        {
+            string? classified = (state.Domain, deviceClass.GetString()) switch
+            {
+                ("sensor", "temperature") => "thermometer",
+                ("sensor", "humidity") => "water-percent",
+                ("sensor", "battery") => "battery",
+                ("binary_sensor", "motion") => "motion-sensor",
+                ("binary_sensor", "door") => "door",
+                ("binary_sensor", "window") => "window-closed",
+                _ => null
+            };
+            if (classified is not null) return classified;
+        }
+        return state.Domain switch
+        {
+            "light" => state.State == "on" ? "lightbulb" : "lightbulb-outline",
+            "switch" => state.State == "on" ? "toggle-switch" : "toggle-switch-off",
+            "binary_sensor" => "checkbox-blank-circle-outline",
+            "sensor" => "eye",
+            "scene" => "palette",
+            "script" => "script-text",
+            "button" => "gesture-tap-button",
+            _ => null
+        };
     }
 
     private static bool IsActive(string state) =>

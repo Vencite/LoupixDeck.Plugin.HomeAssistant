@@ -18,9 +18,9 @@ internal abstract class EntityCommand(HomeAssistantCommandAccess access) : IDisp
     public ButtonTargets SupportedTargets => ButtonTargets.All;
 
     /// <summary>The state is pushed through <see cref="EntityStore.EntityChanged"/>; the poll is a safety net.</summary>
-    public TimeSpan UpdateInterval => TimeSpan.FromSeconds(5);
+    public TimeSpan UpdateInterval => TimeSpan.FromSeconds(1);
 
-    public async Task Execute(CommandContext ctx)
+    public virtual async Task Execute(CommandContext ctx)
     {
         if (ctx.Parameters.Length < 1 || !HomeAssistantIdentifiers.IsEntityId(ctx.Parameters[0]))
         {
@@ -140,4 +140,16 @@ internal sealed class PressButtonCommand(HomeAssistantCommandAccess access) : En
 
     protected override Task CallAsync(HomeAssistantClient client, string entityId) =>
         client.CallServiceAsync("button", "press", entityId);
+}
+
+internal sealed class ShowEntityCommand(HomeAssistantCommandAccess access) : EntityCommand(access)
+{
+    public const string Name = "HomeAssistant.ShowEntity";
+
+    public override CommandDescriptor Descriptor { get; } =
+        Describe(Name, "Show Entity", "Display a Home Assistant entity state without controlling it.");
+
+    public override Task Execute(CommandContext ctx) => Task.CompletedTask;
+
+    protected override Task CallAsync(HomeAssistantClient client, string entityId) => Task.CompletedTask;
 }

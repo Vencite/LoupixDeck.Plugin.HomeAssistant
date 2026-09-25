@@ -14,6 +14,7 @@ internal static class EntityMenu
     {
         ["automation"] = "Automations",
         ["button"] = "Buttons",
+        ["binary_sensor"] = "Binary sensors",
         ["climate"] = "Climate",
         ["cover"] = "Covers",
         ["fan"] = "Fans",
@@ -23,6 +24,7 @@ internal static class EntityMenu
         ["light"] = "Lights",
         ["media_player"] = "Media players",
         ["scene"] = "Scenes",
+        ["sensor"] = "Sensors",
         ["script"] = "Scripts",
         ["siren"] = "Sirens",
         ["switch"] = "Switches"
@@ -48,21 +50,22 @@ internal static class EntityMenu
 
     private static IReadOnlyList<MenuNode> Actions(HomeAssistantState entity) => entity.Domain switch
     {
-        "scene" => [Leaf("Activate", ActivateSceneCommand.Name, entity.EntityId)],
-        "script" => [Leaf("Run", RunScriptCommand.Name, entity.EntityId)],
-        "button" => [Leaf("Press", PressButtonCommand.Name, entity.EntityId)],
+        "sensor" or "binary_sensor" => [Leaf(entity, "Show state", ShowEntityCommand.Name)],
+        "scene" => [Leaf(entity, "Activate", ActivateSceneCommand.Name)],
+        "script" => [Leaf(entity, "Run", RunScriptCommand.Name)],
+        "button" => [Leaf(entity, "Press", PressButtonCommand.Name)],
         _ =>
         [
-            Leaf("Toggle", ToggleEntityCommand.Name, entity.EntityId),
-            Leaf("On", TurnOnEntityCommand.Name, entity.EntityId),
-            Leaf("Off", TurnOffEntityCommand.Name, entity.EntityId)
+            Leaf(entity, "Toggle", ToggleEntityCommand.Name),
+            Leaf(entity, "On", TurnOnEntityCommand.Name),
+            Leaf(entity, "Off", TurnOffEntityCommand.Name)
         ]
     };
 
-    private static MenuNode Leaf(string name, string commandName, string entityId) => new()
+    private static MenuNode Leaf(HomeAssistantState entity, string action, string commandName) => new()
     {
-        Name = name,
+        Name = $"{entity.FriendlyName} · {action}",
         CommandName = commandName,
-        Parameters = new Dictionary<string, string> { ["EntityId"] = entityId }
+        Parameters = new Dictionary<string, string> { ["EntityId"] = entity.EntityId }
     };
 }

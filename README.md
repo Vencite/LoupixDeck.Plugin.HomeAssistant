@@ -31,10 +31,13 @@ The implementation currently provides:
 - Actions for scripts, scenes, and Home Assistant buttons
 - A generic service-call action for anything the dedicated commands do not cover
 - Dynamic LoupixDeck menus that group entities by domain
+- Read-only state buttons for sensors and binary sensors (including sensor units)
 
 All entity commands take one shared `entity_id` parameter, so a single command serves every entity of its kind instead of one command per entity.
 
-Each entity command also accepts optional per-button display overrides stored as trailing parameters: a `ShowIcon` flag, a custom `Label` and a custom `Icon` (a host symbol id, optionally with an `mdi:` prefix). Bindings that only contain `entity_id` keep working unchanged; leaving an override empty falls back to the automatic Home Assistant presentation (friendly name, entity icon attribute, circle indicator).
+Each entity command also accepts optional per-button display overrides stored as trailing parameters: a `ShowIcon` flag, a custom `Label` and a custom `Icon` (a host symbol id, optionally with an `mdi:` prefix). Bindings that only contain `entity_id` keep working unchanged; leaving an override empty falls back to the automatic Home Assistant presentation (friendly name and an icon from entity metadata, device class or domain).
+
+In the command editor, change **Label** to shorten the text beneath the state (for example, `Lampka`) and **Icon** to a symbol id such as `mdi:lightbulb`. LoupixDeck currently presents the icon parameter as a text field. Menu actions include the entity name, so searching for a friendly name finds its commands.
 
 ## Installation
 

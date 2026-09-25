@@ -41,12 +41,15 @@ internal static class CommandSmoke
         IReadOnlyList<MenuNode> roots = await menu.GetMenuNodes(ButtonTargets.TouchButton);
         MenuNode group = roots.Single(node => node.Name == "Home Assistant");
         Check(group.Children.All(child => child.Name != "Not connected"), "connected menu");
-        Check(group.Children.All(child => child.Name != "Sensors"), "non-controllable domain stays out of the menu");
+        MenuNode sensor = group.Children.Single(child => child.Name == "Sensors").Children.Single();
+        Check(sensor.Children.Single().CommandName == "HomeAssistant.ShowEntity", "sensor offers a display-only action");
 
         MenuNode office = group.Children.Single(child => child.Name == "Lights").Children.Single(child => child.Name == "Office Light");
         Check(office.Children.Count == 3, "light offers three actions");
-        Check(office.Children.Any(child => child.Name == "Toggle" && child.CommandName == "HomeAssistant.ToggleEntity"),
+        Check(office.Children.Any(child => child.Name == "Office Light · Toggle" && child.CommandName == "HomeAssistant.ToggleEntity"),
             "light toggle leaf");
+        Check(office.Children.All(child => child.Name.Contains("Office Light", StringComparison.OrdinalIgnoreCase)),
+            "searchable action names include the entity name");
         Check(office.Children.All(child => child.Parameters["EntityId"] == "light.office"), "leaf bakes the entity id");
 
         MenuNode movie = group.Children.Single(child => child.Name == "Scenes").Children.Single(child => child.Name == "Movie Night");
@@ -56,9 +59,14 @@ internal static class CommandSmoke
 
         // Execution forwards the entity id to the matching service call.
         List<IPluginCommand> commands = plugin.GetCommands().ToList();
-        Check(commands.Count == 7, "seven commands registered");
+        Check(commands.Count == 8, "eight commands registered");
         IPluginCommand toggle = commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.ToggleEntity");
         IPluginCommand call = commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.CallService");
+        IPluginCommand show = commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.ShowEntity");
+        Check(((IDisplayImageCommand)show).UpdateInterval == TimeSpan.FromSeconds(1), "state display has a one-second polling fallback");
+        int callsBeforeShow = server.Calls.Count;
+        await show.Execute(Context(host, "sensor.temp"));
+        Check(server.Calls.Count == callsBeforeShow, "sensor display never calls a service");
 
         await toggle.Execute(Context(host, "light.office"));
         await server.WaitForCallsAsync(1, timeout.Token);
@@ -84,15 +92,16 @@ internal static class CommandSmoke
         // Rendering reads the cached state and stays synchronous.
         var activeCanvas = new RecordingCanvas();
         bool rendered = ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office"), activeCanvas);
-        Check(rendered && activeCanvas.TextDraws == 2 && activeCanvas.FilledCircles == 1, "active entity renders a filled indicator");
+        Check(rendered && activeCanvas.TextDraws == 2 && activeCanvas.Symbols.Contains("lightbulb"), "active light renders its domain icon");
 
         var inactiveCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "switch.kettle"), inactiveCanvas);
-        Check(inactiveCanvas.FilledCircles == 0 && inactiveCanvas.OutlinedCircles == 1, "inactive entity renders an outlined indicator");
+        Check(inactiveCanvas.Symbols.Contains("toggle-switch-off"), "inactive switch renders its domain icon");
 
         var sensorCanvas = new RecordingCanvas();
-        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "sensor.temp"), sensorCanvas);
-        Check(sensorCanvas.FilledCircles == 0 && sensorCanvas.OutlinedCircles == 1, "sensor domain has no icon yet");
+        ((IDisplayImageCommand)show).RenderImage(Context(host, "sensor.temp"), sensorCanvas);
+        Check(sensorCanvas.Symbols.Contains("eye"), "sensor domain icon is resolved");
+        Check(sensorCanvas.Texts[0].Text == "21 °C", "sensor state includes its unit");
 
         var unknownCanvas = new RecordingCanvas();
         Check(((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.ghost"), unknownCanvas) &&
@@ -144,12 +153,13 @@ internal static class CommandSmoke
         foreach (string name in new[]
                  {
                      "HomeAssistant.ToggleEntity", "HomeAssistant.TurnOnEntity", "HomeAssistant.TurnOffEntity",
-                     "HomeAssistant.ActivateScene", "HomeAssistant.RunScript", "HomeAssistant.PressButton"
+                     "HomeAssistant.ActivateScene", "HomeAssistant.RunScript", "HomeAssistant.PressButton",
+                     "HomeAssistant.ShowEntity"
                  })
             Check(host.Refreshes.Contains(name), $"entity change refreshes {name}");
 
         // The first event refreshes immediately instead of waiting for a coalescing window.
-        Check(host.Refreshes.Count >= 6, "first event refreshes without delay");
+        Check(host.Refreshes.Count >= 7, "first event refreshes without delay");
 
         // A burst folds into a bounded number of refreshes: the first event refreshes
         // immediately and the rest fold into one trailing pass — never one per event. Six events
@@ -160,11 +170,11 @@ internal static class CommandSmoke
         await server.PublishBurstAsync(timeout.Token);
         await Task.Delay(1000, timeout.Token);
         int burstRefreshes = host.Refreshes.Count - burstBase;
-        Check(burstRefreshes == 6, $"burst coalesces into one pass (got {burstRefreshes})");
+        Check(burstRefreshes == 7, $"burst coalesces into one pass (got {burstRefreshes})");
 
         var changedCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office"), changedCanvas);
-        Check(changedCanvas.FilledCircles == 0 && changedCanvas.OutlinedCircles == 1,
+        Check(changedCanvas.Symbols.Contains("lightbulb-outline"),
             "rendering reflects the pushed state");
 
         plugin.Shutdown();
@@ -319,17 +329,18 @@ internal static class CommandSmoke
             State("scene.movie", "on", "Movie Night"),
             State("script.goodnight", "off", "Goodnight"),
             State("button.doorbell", "unknown", "Doorbell"),
-            State("sensor.temp", "21", "Temperature")
+            State("sensor.temp", "21", "Temperature", null, unit: "°C")
         ];
 
         private static object State(string entityId, string value, string friendlyName) =>
             State(entityId, value, friendlyName, null, "2024-01-01T00:00:00+00:00");
 
         private static object State(string entityId, string value, string friendlyName, string? icon,
-            string updated = "2024-01-01T00:00:00+00:00")
+            string updated = "2024-01-01T00:00:00+00:00", string? unit = null)
         {
             var attributes = new Dictionary<string, object> { ["friendly_name"] = friendlyName };
             if (icon is not null) attributes["icon"] = icon;
+            if (unit is not null) attributes["unit_of_measurement"] = unit;
             return new
             {
                 entity_id = entityId, state = value,
@@ -468,8 +479,13 @@ internal static class CommandSmoke
         public void DrawLine(int x1, int y1, int x2, int y2, int strokeWidth, PluginColor color) { }
         public float MeasureText(string text, float fontSize, bool bold = false, bool italic = false) =>
             text.Sum(character => character == ' ' ? fontSize * 0.3f : fontSize * 0.6f);
-        public void DrawSymbol(string symbolId, int x, int y, int width, int height, PluginColor tint) =>
+        public void DrawSymbol(string symbolId, int x, int y, int width, int height, PluginColor tint)
+        {
             Symbols.Add(symbolId);
+            HasIndicator = true;
+            IndicatorTop = y;
+            IndicatorBottom = y + height;
+        }
         public void DrawSymbol(string symbolId, int x, int y, int width, int height, SymbolStyle style) { }
         public void DrawImage(byte[] imageBytes, int x, int y, int width, int height) { }
         public void DrawImage(byte[] imageBytes, int x, int y, int width, int height, byte opacity, PluginColor tint = default) { }
