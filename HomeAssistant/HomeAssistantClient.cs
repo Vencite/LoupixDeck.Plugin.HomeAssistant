@@ -25,6 +25,9 @@ public sealed class HomeAssistantClient(IPluginLogger logger) : IAsyncDisposable
 
     public event EventHandler<HomeAssistantStateChangedEvent>? StateChanged;
 
+    /// <summary>Raised after a reconnect is authenticated, before subscriptions are restored.</summary>
+    public event EventHandler? ConnectionRestored;
+
     public HomeAssistantConnectionState State
     {
         get { lock (_sync) return _state; }
@@ -221,6 +224,17 @@ public sealed class HomeAssistantClient(IPluginLogger logger) : IAsyncDisposable
                 logger.Info("Home Assistant authenticated.");
                 lock (_sync) _state = HomeAssistantConnectionState.Connected;
                 receiveTask = ReceiveLoopAsync(socket, stopping);
+
+                if (connectedOnce)
+                {
+                    EventHandler? handlers = ConnectionRestored;
+                    if (handlers is not null)
+                        foreach (EventHandler handler in handlers.GetInvocationList().Cast<EventHandler>())
+                        {
+                            try { handler(this, EventArgs.Empty); }
+                            catch (Exception ex) { logger.Warn($"Home Assistant reconnect callback failed ({ex.GetType().Name})."); }
+                        }
+                }
 
                 bool restore;
                 lock (_sync) restore = _wantsStateChanges;
@@ -446,7 +460,13 @@ public sealed class HomeAssistantClient(IPluginLogger logger) : IAsyncDisposable
         string entityId = ReadRequiredString(data, "entity_id");
         HomeAssistantState? oldState = ReadNullableState(data, "old_state");
         HomeAssistantState? newState = ReadNullableState(data, "new_state");
-        var change = new HomeAssistantStateChangedEvent(entityId, oldState, newState);
+        DateTimeOffset timeFired;
+        try { timeFired = eventValue.GetProperty("time_fired").GetDateTimeOffset(); }
+        catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException or FormatException)
+        {
+            throw new InvalidDataException("Home Assistant state_changed event has invalid time_fired.", ex);
+        }
+        var change = new HomeAssistantStateChangedEvent(entityId, oldState, newState, timeFired);
         EventHandler<HomeAssistantStateChangedEvent>? handlers = StateChanged;
         if (handlers is null) return;
         foreach (EventHandler<HomeAssistantStateChangedEvent> handler in handlers.GetInvocationList().Cast<EventHandler<HomeAssistantStateChangedEvent>>())

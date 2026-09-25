@@ -69,6 +69,7 @@ await client.DisconnectAsync();
 await client.DisposeAsync();
 await server.WaitAsync(timeout.Token);
 Console.WriteLine("HomeAssistantClient smoke check passed.");
+await EntityStoreSmoke.RunAsync();
 
 async Task ServeAsync()
 {
@@ -99,7 +100,8 @@ async Task ServeAsync()
         await SendAsync(socket, new { id = subscriptionId, type = "result", success = true, result = (object?)null });
         await SendAsync(socket, new { id = subscriptionId, type = "event", @event = new
         {
-            event_type = "state_changed", data = new { entity_id = "sensor.test", old_state = (object?)null, new_state = State("on") }
+            event_type = "state_changed", time_fired = "2024-01-01T00:00:01+00:00",
+            data = new { entity_id = "sensor.test", old_state = (object?)null, new_state = State("on") }
         } });
         await firstEvent.Task.WaitAsync(timeout.Token);
         await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "", timeout.Token);
@@ -115,7 +117,8 @@ async Task ServeAsync()
         secondSubscriptionSeen.SetResult();
         await SendAsync(socket, new { id = subscriptionId, type = "event", @event = new
         {
-            event_type = "state_changed", data = new { entity_id = "sensor.test", old_state = State("on"), new_state = (object?)null }
+            event_type = "state_changed", time_fired = "2024-01-01T00:00:02+00:00",
+            data = new { entity_id = "sensor.test", old_state = State("on"), new_state = (object?)null }
         } });
         await secondEvent.Task.WaitAsync(timeout.Token);
         using JsonDocument unfinished = await ReadAsync(socket);

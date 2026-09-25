@@ -12,7 +12,8 @@ public sealed record HomeAssistantState(
 public sealed record HomeAssistantStateChangedEvent(
     string EntityId,
     HomeAssistantState? OldState,
-    HomeAssistantState? NewState);
+    HomeAssistantState? NewState,
+    DateTimeOffset TimeFired);
 
 public enum HomeAssistantConnectionState
 {
