@@ -12,7 +12,7 @@ namespace LoupixDeck.Plugin.HomeAssistant;
 /// settings page and the single active <see cref="HomeAssistantClient"/> plus its
 /// <see cref="EntityStore"/>.
 /// </summary>
-public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage
+public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMenuContributor
 {
     private const string UrlSettingKey = "url";
     private const string TokenSettingKey = "accessToken";
@@ -22,6 +22,17 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage
     private static readonly TimeSpan InitialRetryMaxDelay = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan TestConnectionTimeout = TimeSpan.FromSeconds(12);
     private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(5);
+    private const long EntityRefreshCoalesceMs = 500;
+
+    private static readonly string[] EntityCommandNames =
+    [
+        ToggleEntityCommand.Name,
+        TurnOnEntityCommand.Name,
+        TurnOffEntityCommand.Name,
+        ActivateSceneCommand.Name,
+        RunScriptCommand.Name,
+        PressButtonCommand.Name
+    ];
 
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly object _stateSync = new();
@@ -34,6 +45,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage
     private HomeAssistantConnectionSettings? _desired;
     private Task _lifecycle = Task.CompletedTask;
     private long _generation;
+    private long _lastEntityRefreshTicks;
     private bool _shuttingDown;
 
     private IReadOnlyList<PluginSettingAction>? _settingsActions;
@@ -161,7 +173,17 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage
 
     public override IEnumerable<IPluginCommand> GetCommands()
     {
-        yield return new ScaffoldPingCommand();
+        var access = new HomeAssistantCommandAccess(GetClient, FindEntity);
+        return
+        [
+            new ToggleEntityCommand(access),
+            new TurnOnEntityCommand(access),
+            new TurnOffEntityCommand(access),
+            new ActivateSceneCommand(access),
+            new RunScriptCommand(access),
+            new PressButtonCommand(access),
+            new CallServiceCommand(access)
+        ];
     }
 
     public override IReadOnlyList<CommandGroupDescriptor> GetCommandGroups() =>
@@ -173,6 +195,57 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage
             Section = CommandGroupSection.Plugins
         }
     ];
+
+    // ───────── IMenuContributor — dynamic entity submenus ─────────
+
+    /// <summary>
+    /// Builds the entity submenus from the current cache. Reads only the in-memory snapshot, so the
+    /// host's menu timeout is never at risk; a disconnected plugin shows a placeholder instead.
+    /// </summary>
+    public Task<IReadOnlyList<MenuNode>> GetMenuNodes(ButtonTargets target)
+    {
+        EntityStore? store;
+        lock (_stateSync) store = _store;
+
+        IReadOnlyList<MenuNode> children = store is null || !store.IsInitialized
+            ? [new MenuNode { Name = "Not connected" }]
+            : EntityMenu.Build(store.GetSnapshot());
+
+        return Task.FromResult<IReadOnlyList<MenuNode>>(
+            [new MenuNode { Name = "Home Assistant", Children = children }]);
+    }
+
+    // ───────── runtime access ─────────
+
+    private HomeAssistantClient? GetClient()
+    {
+        lock (_stateSync) return _client;
+    }
+
+    private HomeAssistantState? FindEntity(string entityId)
+    {
+        EntityStore? store;
+        lock (_stateSync) store = _store;
+        return store is not null && store.TryGet(entityId, out HomeAssistantState? state) ? state : null;
+    }
+
+    /// <summary>
+    /// Pushes a refresh to the entity commands after an accepted live change. Bursts are coalesced,
+    /// because the host repaints every button of a command and a busy Home Assistant emits events far
+    /// faster than a button needs to be redrawn; the poll interval remains the safety net.
+    /// </summary>
+    private void OnEntityChanged(object? sender, HomeAssistantStateChangedEvent change)
+    {
+        long now = Environment.TickCount64;
+        long last = Interlocked.Read(ref _lastEntityRefreshTicks);
+        if (now - last < EntityRefreshCoalesceMs) return;
+        if (Interlocked.CompareExchange(ref _lastEntityRefreshTicks, now, last) != last) return;
+
+        IPluginHost? host = _host;
+        if (host is null) return;
+        foreach (string commandName in EntityCommandNames)
+            host.RequestButtonRefresh(commandName);
+    }
 
     // ───────── settings ─────────
 
@@ -288,6 +361,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage
         }
 
         var store = new EntityStore(client, logger);
+        store.EntityChanged += OnEntityChanged;
         try
         {
             await store.InitializeAsync(cancellationToken).ConfigureAwait(false);

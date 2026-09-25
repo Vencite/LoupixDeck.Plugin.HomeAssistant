@@ -76,6 +76,7 @@ await server.WaitAsync(timeout.Token);
 Console.WriteLine("HomeAssistantClient smoke check passed.");
 await EntityStoreSmoke.RunAsync();
 await PluginLifecycleSmoke.RunAsync();
+await CommandSmoke.RunAsync();
 
 async Task ServeAsync()
 {

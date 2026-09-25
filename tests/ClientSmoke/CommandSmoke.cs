@@ -1,0 +1,386 @@
+using System.Collections.Concurrent;
+using System.Net;
+using System.Net.Sockets;
+using System.Net.WebSockets;
+using System.Text.Json;
+using LoupixDeck.Plugin.HomeAssistant;
+using LoupixDeck.PluginSdk;
+
+/// <summary>
+/// Checks the command layer against a synthetic Home Assistant server: dynamic entity submenus, the
+/// per-entity service commands, the generic service escape hatch and the touch-button rendering.
+/// </summary>
+internal static class CommandSmoke
+{
+    public static async Task RunAsync()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        int port = FreePort();
+        using var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+        var server = new ControlServer(listener, timeout.Token);
+        _ = server.RunAsync();
+
+        var host = new RecordingHost();
+        host.Settings.Set("url", $"http://127.0.0.1:{port}");
+        host.Settings.Set("accessToken", "token");
+
+        var plugin = new HomeAssistantPlugin();
+        plugin.Initialize(host);
+
+        IMenuContributor menu = plugin;
+        await UntilAsync(async () =>
+        {
+            IReadOnlyList<MenuNode> nodes = await menu.GetMenuNodes(ButtonTargets.TouchButton);
+            return nodes.Any(node => node.Children.Any(child => child.Name == "Lights"));
+        }, timeout.Token);
+
+        // The dynamic menu mirrors the controllable domains of the cache, with the entity id baked
+        // into the shared parameter of a stable command.
+        IReadOnlyList<MenuNode> roots = await menu.GetMenuNodes(ButtonTargets.TouchButton);
+        MenuNode group = roots.Single(node => node.Name == "Home Assistant");
+        Check(group.Children.All(child => child.Name != "Not connected"), "connected menu");
+        Check(group.Children.All(child => child.Name != "Sensors"), "non-controllable domain stays out of the menu");
+
+        MenuNode office = group.Children.Single(child => child.Name == "Lights").Children.Single(child => child.Name == "Office Light");
+        Check(office.Children.Count == 3, "light offers three actions");
+        Check(office.Children.Any(child => child.Name == "Toggle" && child.CommandName == "HomeAssistant.ToggleEntity"),
+            "light toggle leaf");
+        Check(office.Children.All(child => child.Parameters["EntityId"] == "light.office"), "leaf bakes the entity id");
+
+        MenuNode movie = group.Children.Single(child => child.Name == "Scenes").Children.Single(child => child.Name == "Movie Night");
+        Check(movie.Children.Single().CommandName == "HomeAssistant.ActivateScene", "scene has its own action");
+        Check(group.Children.Single(child => child.Name == "Buttons").Children.Single().Children.Single().CommandName == "HomeAssistant.PressButton",
+            "button has its own action");
+
+        // Execution forwards the entity id to the matching service call.
+        List<IPluginCommand> commands = plugin.GetCommands().ToList();
+        Check(commands.Count == 7, "seven commands registered");
+        IPluginCommand toggle = commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.ToggleEntity");
+        IPluginCommand call = commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.CallService");
+
+        await toggle.Execute(Context(host, "light.office"));
+        await server.WaitForCallsAsync(1, timeout.Token);
+        Check(server.Calls[0] == new ServiceCall("homeassistant", "toggle", "light.office"), "toggle call");
+
+        await call.Execute(Context(host, "script", "turn_on", "script.goodnight"));
+        await server.WaitForCallsAsync(2, timeout.Token);
+        Check(server.Calls[1] == new ServiceCall("script", "turn_on", "script.goodnight"), "generic service call");
+
+        int before = server.Calls.Count;
+        await toggle.Execute(Context(host, "Not An Id"));
+        Check(server.Calls.Count == before, "invalid entity is not sent");
+        Check(host.Recorder.Warnings.Any(warning => warning.Contains("entity_id")), "invalid entity is reported");
+
+        await call.Execute(Context(host, "light", "turn on"));
+        Check(server.Calls.Count == before, "invalid service is not sent");
+
+        // Rendering reads the cached state and stays synchronous.
+        var activeCanvas = new RecordingCanvas();
+        bool rendered = ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office"), activeCanvas);
+        Check(rendered && activeCanvas.TextDraws == 2 && activeCanvas.FilledCircles == 1, "active entity renders a filled indicator");
+
+        var inactiveCanvas = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "switch.kettle"), inactiveCanvas);
+        Check(inactiveCanvas.FilledCircles == 0 && inactiveCanvas.OutlinedCircles == 1, "inactive entity renders an outlined indicator");
+
+        var unknownCanvas = new RecordingCanvas();
+        Check(((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.ghost"), unknownCanvas) &&
+              unknownCanvas.TextDraws == 1, "unknown entity renders a placeholder");
+
+        var emptyCanvas = new RecordingCanvas();
+        Check(!((IDisplayImageCommand)toggle).RenderImage(Context(host), emptyCanvas), "missing parameter does not render");
+
+        // A live change is pushed to the entity commands, and the redraw reads the updated cache.
+        await server.PublishStateChangeAsync(timeout.Token);
+        await UntilAsync(() => Task.FromResult(host.Refreshes.Count > 0), timeout.Token);
+        foreach (string name in new[]
+                 {
+                     "HomeAssistant.ToggleEntity", "HomeAssistant.TurnOnEntity", "HomeAssistant.TurnOffEntity",
+                     "HomeAssistant.ActivateScene", "HomeAssistant.RunScript", "HomeAssistant.PressButton"
+                 })
+            Check(host.Refreshes.Contains(name), $"entity change refreshes {name}");
+
+        var changedCanvas = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office"), changedCanvas);
+        Check(changedCanvas.FilledCircles == 0 && changedCanvas.OutlinedCircles == 1,
+            "rendering reflects the pushed state");
+
+        plugin.Shutdown();
+        Console.WriteLine("Home Assistant command smoke check passed.");
+    }
+
+    private static CommandContext Context(RecordingHost host, params string[] parameters) => new()
+    {
+        Parameters = parameters,
+        Target = ButtonTargets.TouchButton,
+        Host = host
+    };
+
+    private static int FreePort()
+    {
+        using var probe = new TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+        return port;
+    }
+
+    private static async Task UntilAsync(Func<Task<bool>> condition, CancellationToken cancellationToken)
+    {
+        while (!await condition()) await Task.Delay(20, cancellationToken);
+    }
+
+    private sealed record ServiceCall(string Domain, string Service, string? EntityId);
+
+    private sealed class ControlServer(HttpListener listener, CancellationToken cancellationToken)
+    {
+        private readonly List<ServiceCall> _calls = [];
+        private readonly TaskCompletionSource<int> _subscription = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private WebSocket? _socket;
+
+        public IReadOnlyList<ServiceCall> Calls
+        {
+            get { lock (_calls) return _calls.ToArray(); }
+        }
+
+        /// <summary>Pushes a live <c>state_changed</c> event to the subscribed plugin.</summary>
+        public async Task PublishStateChangeAsync(CancellationToken token)
+        {
+            int id = await _subscription.Task.WaitAsync(token);
+            WebSocket socket = _socket ?? throw new InvalidOperationException("No subscribed socket.");
+            await SendAsync(socket, new
+            {
+                id, type = "event",
+                @event = new
+                {
+                    event_type = "state_changed",
+                    time_fired = "2024-01-02T00:00:00+00:00",
+                    data = new
+                    {
+                        entity_id = "light.office",
+                        old_state = State("light.office", "on", "Office Light"),
+                        new_state = State("light.office", "off", "Office Light", "2024-01-02T00:00:00+00:00")
+                    }
+                }
+            });
+        }
+
+        public async Task RunAsync()
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                HttpListenerContext context;
+                try { context = await listener.GetContextAsync().WaitAsync(cancellationToken); }
+                catch (Exception) { return; }
+
+                WebSocket socket = (await context.AcceptWebSocketAsync(null)).WebSocket;
+                _ = HandleAsync(socket);
+            }
+        }
+
+        public async Task WaitForCallsAsync(int count, CancellationToken token)
+        {
+            while (true)
+            {
+                lock (_calls) if (_calls.Count >= count) return;
+                await Task.Delay(20, token);
+            }
+        }
+
+        private async Task HandleAsync(WebSocket socket)
+        {
+            _socket = socket;
+            try
+            {
+                await SendAsync(socket, new { type = "auth_required" });
+                using (JsonDocument auth = await ReadAsync(socket))
+                {
+                    if (auth.RootElement.GetProperty("type").GetString() != "auth") return;
+                }
+                await SendAsync(socket, new { type = "auth_ok" });
+
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    using JsonDocument message = await ReadAsync(socket);
+                    int id = message.RootElement.GetProperty("id").GetInt32();
+                    switch (message.RootElement.GetProperty("type").GetString())
+                    {
+                        case "subscribe_events":
+                            _subscription.TrySetResult(id);
+                            await SendAsync(socket, new { id, type = "result", success = true, result = (object?)null });
+                            break;
+                        case "get_states":
+                            await SendAsync(socket, new { id, type = "result", success = true, result = States() });
+                            break;
+                        case "call_service":
+                            string domain = message.RootElement.GetProperty("domain").GetString() ?? "";
+                            string service = message.RootElement.GetProperty("service").GetString() ?? "";
+                            string? entityId = message.RootElement.TryGetProperty("target", out JsonElement target) &&
+                                               target.TryGetProperty("entity_id", out JsonElement entity)
+                                ? entity.GetString()
+                                : null;
+                            lock (_calls) _calls.Add(new ServiceCall(domain, service, entityId));
+                            await SendAsync(socket, new { id, type = "result", success = true, result = (object?)null });
+                            break;
+                        default:
+                            await SendAsync(socket, new
+                            {
+                                id, type = "result", success = false,
+                                error = new { code = "unsupported", message = "unsupported" }
+                            });
+                            break;
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // A closed socket is a normal end of the synthetic session.
+            }
+        }
+
+        private static object[] States() =>
+        [
+            State("light.office", "on", "Office Light"),
+            State("switch.kettle", "off", "Kettle"),
+            State("scene.movie", "on", "Movie Night"),
+            State("script.goodnight", "off", "Goodnight"),
+            State("button.doorbell", "unknown", "Doorbell"),
+            State("sensor.temp", "21", "Temperature")
+        ];
+
+        private static object State(string entityId, string value, string friendlyName,
+            string updated = "2024-01-01T00:00:00+00:00") => new
+        {
+            entity_id = entityId, state = value,
+            attributes = new { friendly_name = friendlyName },
+            last_changed = updated,
+            last_updated = updated
+        };
+
+        private async Task SendAsync(WebSocket socket, object message) =>
+            await socket.SendAsync(JsonSerializer.SerializeToUtf8Bytes(message), WebSocketMessageType.Text, true,
+                cancellationToken);
+
+        private async Task<JsonDocument> ReadAsync(WebSocket socket)
+        {
+            byte[] buffer = new byte[8192];
+            using var message = new MemoryStream();
+            while (true)
+            {
+                ValueWebSocketReceiveResult part = await socket.ReceiveAsync(buffer.AsMemory(), cancellationToken);
+                if (part.MessageType == WebSocketMessageType.Close)
+                    throw new IOException("client closed");
+                message.Write(buffer, 0, part.Count);
+                if (part.EndOfMessage) return JsonDocument.Parse(message.ToArray());
+            }
+        }
+    }
+
+    private sealed class RecordingHost : IPluginHost
+    {
+        private readonly RecordingLogger _logger = new();
+        private readonly ConcurrentQueue<string> _refreshes = new();
+
+        public IPluginLogger Logger => _logger;
+        public RecordingLogger Recorder => _logger;
+        public IReadOnlyList<string> Refreshes => _refreshes.ToArray();
+        public IPluginSettings Settings { get; } = new FakeSettings();
+        public string CurrentLanguage => "en";
+        public string Tr(string english) => english;
+        public FolderGridInfo FolderGrid => new(5, 3, 14);
+        public DeviceInfo? ActiveDevice => null;
+        public bool IsInExclusiveMode => false;
+        public void RequestButtonRefresh(string commandName) => _refreshes.Enqueue(commandName);
+        public void ExecuteCommand(string command) { }
+        public void OpenFolder(IFolderProvider provider) { }
+        public bool OpenBrowser(string url) => false;
+        public void OverlayTouchText(int slot, string text, TimeSpan duration) { }
+        public int GetTouchSlotForRotary(int rotaryIndex) => -1;
+        public bool RequestExclusiveMode(IExclusiveModeProvider provider) => false;
+        public void ReleaseExclusiveMode(IExclusiveModeProvider provider) { }
+        public IFullDisplayRenderSession? RequestFullDisplayRenderer(IFullDisplayRenderer renderer) => null;
+        public IReadOnlyList<string> GetButtonStates(string commandName) => [];
+        public string? GetActiveButtonState(string commandName) => null;
+        public bool SetActiveButtonState(string commandName, string stateNameOrId) => false;
+    }
+
+    private sealed class RecordingLogger : IPluginLogger
+    {
+        private readonly ConcurrentQueue<string> _warnings = new();
+
+        public IEnumerable<string> Warnings => _warnings;
+
+        public void Info(string message) { }
+        public void Warn(string message) => _warnings.Enqueue(message);
+        public void Error(string message, Exception? exception = null) => _warnings.Enqueue(message);
+    }
+
+    private sealed class FakeSettings : IPluginSettings
+    {
+        private readonly Dictionary<string, object> _values = [];
+
+        public T? Get<T>(string key, T? defaultValue = default) =>
+            _values.TryGetValue(key, out object? value) && value is T typed ? typed : defaultValue;
+
+        public void Set<T>(string key, T value) => _values[key] = value!;
+
+        public bool Contains(string key) => _values.ContainsKey(key);
+
+        public void Remove(string key) => _values.Remove(key);
+
+        public IEnumerable<string> Keys => _values.Keys;
+
+        public void Save() { }
+    }
+
+    /// <summary>Counts the drawing primitives the renderer uses without rasterizing anything.</summary>
+    private sealed class RecordingCanvas : IRenderCanvas
+    {
+        public int Width => 90;
+        public int Height => 90;
+        public int TextDraws { get; private set; }
+        public int FilledCircles { get; private set; }
+        public int OutlinedCircles { get; private set; }
+
+        public void DrawText(string text, int x, int y, int width, int height, PluginColor color, float fontSize,
+            bool bold = false, bool italic = false, bool centered = true, bool outlined = false,
+            PluginColor outlineColor = default) => TextDraws++;
+
+        public void DrawText(string text, int x, int y, int width, int height, PluginColor color, float fontSize,
+            TextHAlign hAlign, TextVAlign vAlign, bool bold = false, bool italic = false, bool outlined = false,
+            PluginColor outlineColor = default) => TextDraws++;
+
+        public void FillCircle(int centerX, int centerY, int radius, PluginColor color) => FilledCircles++;
+
+        public void DrawCircle(int centerX, int centerY, int radius, int strokeWidth, PluginColor color) =>
+            OutlinedCircles++;
+
+        public void Clear(PluginColor color) { }
+        public void FillRectangle(int x, int y, int width, int height, PluginColor color) { }
+        public void DrawRectangle(int x, int y, int width, int height, int strokeWidth, PluginColor color) { }
+        public void FillRoundedRectangle(int x, int y, int width, int height, int radius, PluginColor color) { }
+        public void DrawRoundedRectangle(int x, int y, int width, int height, int radius, int strokeWidth, PluginColor color) { }
+        public void FillEllipse(int x, int y, int width, int height, PluginColor color) { }
+        public void DrawEllipse(int x, int y, int width, int height, int strokeWidth, PluginColor color) { }
+        public void DrawArc(int x, int y, int width, int height, float startAngle, float sweepAngle, int strokeWidth, PluginColor color) { }
+        public void FillArc(int x, int y, int width, int height, float startAngle, float sweepAngle, PluginColor color) { }
+        public void DrawLine(int x1, int y1, int x2, int y2, int strokeWidth, PluginColor color) { }
+        public float MeasureText(string text, float fontSize, bool bold = false, bool italic = false) => 0;
+        public void DrawSymbol(string symbolId, int x, int y, int width, int height, PluginColor tint) { }
+        public void DrawSymbol(string symbolId, int x, int y, int width, int height, SymbolStyle style) { }
+        public void DrawImage(byte[] imageBytes, int x, int y, int width, int height) { }
+        public void DrawImage(byte[] imageBytes, int x, int y, int width, int height, byte opacity, PluginColor tint = default) { }
+        public void PushTransform() { }
+        public void PopTransform() { }
+        public void Translate(float dx, float dy) { }
+        public void Rotate(float degrees) { }
+        public void Scale(float sx, float sy) { }
+    }
+
+    private static void Check(bool condition, string name)
+    {
+        if (!condition) throw new Exception($"Failed: {name}");
+    }
+}
