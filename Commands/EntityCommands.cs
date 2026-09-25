@@ -61,16 +61,17 @@ internal abstract class EntityCommand(HomeAssistantCommandAccess access) : IDisp
         DisplayName = displayName,
         Group = "Home Assistant",
         Description = description,
-        ParameterTemplate = "({EntityId},{ShowIcon},{Label},{Icon})",
+        ParameterTemplate = "({EntityId},{ShowIcon},{Label},{Icon},{StateSize},{LabelSize})",
         Parameters =
         [
             new CommandParameter("EntityId", typeof(string)),
             new CommandParameter("ShowIcon", typeof(bool)) { DefaultValue = "True" },
-            // A single space, not an empty default: the host pre-fills menu-built commands with
-            // DefaultValue when set, but falls back to a type placeholder (literally "string")
-            // when it is null. The space trims to empty when the command string is parsed back.
-            new CommandParameter("Label", typeof(string)) { DefaultValue = " " },
-            new CommandParameter("Icon", typeof(string)) { DefaultValue = " " }
+            // Non-empty defaults keep later positional values aligned when the host reopens
+            // the editor; its command parser discards empty pieces.
+            new CommandParameter("Label", typeof(string)) { DefaultValue = "auto" },
+            new CommandParameter("Icon", typeof(string)) { DefaultValue = "auto" },
+            new CommandParameter("StateSize", typeof(string)) { DefaultValue = "11" },
+            new CommandParameter("LabelSize", typeof(string)) { DefaultValue = "13" }
         ],
         HiddenFromMenu = true
     };

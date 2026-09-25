@@ -37,7 +37,7 @@ All entity commands take one shared `entity_id` parameter, so a single command s
 
 Each entity command also accepts optional per-button display overrides stored as trailing parameters: a `ShowIcon` flag, a custom `Label` and a custom `Icon` (a host symbol id, optionally with an `mdi:` prefix). Bindings that only contain `entity_id` keep working unchanged; leaving an override empty falls back to the automatic Home Assistant presentation (friendly name and an icon from entity metadata, device class or domain).
 
-In the command editor, expand the command chip and change **Label** to shorten the text beneath the state (for example, `Lampka`) and **Icon** to a symbol id such as `mdi:lightbulb`. LoupixDeck currently presents the icon parameter as a text field and renders only the symbol ids in its built-in library. Menu actions include the entity name, so searching for a friendly name finds its commands.
+In the command editor, expand the command chip and change **Label** to shorten the text beneath the state (for example, `Lampka`) and **Icon** to a symbol id such as `mdi:lightbulb`. Use `auto` in either field to return to the Home Assistant default. **StateSize** and **LabelSize** set the two text sizes per button (8–18 px). LoupixDeck currently presents the icon parameter as a text field and renders only the symbol ids in its built-in library. Menu actions include the entity name, so searching for a friendly name finds its commands.
 
 If assigning a command adds regular **Text** or **Symbol** layers, hide or remove those layers in the button editor to avoid covering the plugin-rendered state. The plugin's rendered layer is a single image and its text cannot be styled as an independent LoupixDeck layer.
 

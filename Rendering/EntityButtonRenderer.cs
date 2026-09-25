@@ -41,8 +41,21 @@ internal static class EntityButtonRenderer
         int top = Math.Max(2, height / 22);
         int bottom = Math.Max(2, height / 22);
         int gap = Math.Max(2, height / 45);
+        int boxWidth = Math.Max(0, width - side * 2);
 
-        int radius = Math.Max(6, size / 8);
+        string label = options?.Label?.Trim() is { Length: > 0 } custom
+            ? custom
+            : (state?.FriendlyName ?? entityId.Replace('_', ' ')).Trim();
+        if (label.Length == 0) label = entityId;
+        float nameFont = options?.LabelTextSize ?? Math.Max(10f, size / 7f);
+        string fittedName = FitTwoLines(label, boxWidth, nameFont, canvas);
+        int nameLines = fittedName.Contains('\n') ? 2 : 1;
+        int reservedNameHeight = (int)Math.Ceiling(nameFont * 1.2f * nameLines);
+        float stateFont = options?.StateTextSize ?? Math.Max(9f, size / 8f);
+        int reservedStateHeight = (int)Math.Ceiling(stateFont * 1.25f);
+
+        int radius = Math.Max(6, Math.Min(size / 5,
+            (height - top - bottom - reservedNameHeight - reservedStateHeight - gap * 2) / 2 - 2));
         int stroke = Math.Max(2, radius / 4);
         int centerX = width / 2;
         int centerY = top + radius + stroke;
@@ -61,7 +74,6 @@ internal static class EntityButtonRenderer
         }
 
         int indicatorBottom = showIcon ? centerY + radius + stroke : top;
-        int boxWidth = Math.Max(0, width - side * 2);
 
         string stateText = state?.State.Trim() ?? string.Empty;
         if (state?.Domain == "sensor" &&
@@ -73,10 +85,9 @@ internal static class EntityButtonRenderer
         int nameTop;
         if (stateText.Length > 0 && boxWidth > 0)
         {
-            int stateHeight = Math.Min(Math.Max(12, size / 6), Math.Max(0, height - bottom - indicatorBottom - gap));
+            int stateHeight = Math.Min(reservedStateHeight, Math.Max(0, height - bottom - indicatorBottom - gap));
             if (stateHeight > 0)
             {
-                float stateFont = Math.Max(9f, size / 8f);
                 string fittedState = Ellipsize(stateText, boxWidth, stateFont, bold: false, canvas);
                 canvas.DrawText(fittedState, side, indicatorBottom + gap, boxWidth, stateHeight,
                     Inactive, stateFont, TextHAlign.Center, TextVAlign.Middle);
@@ -89,13 +100,6 @@ internal static class EntityButtonRenderer
         int nameHeight = height - bottom - nameTop;
         if (boxWidth <= 0 || nameHeight <= 0) return true;
 
-        string label = options?.Label?.Trim() is { Length: > 0 } custom
-            ? custom
-            : (state?.FriendlyName ?? entityId.Replace('_', ' ')).Trim();
-        if (label.Length == 0) label = entityId;
-
-        float nameFont = Math.Max(10f, size / 7f);
-        string fittedName = FitTwoLines(label, boxWidth, nameFont, canvas);
         canvas.DrawText(fittedName, side, nameTop, boxWidth, nameHeight, accent,
             nameFont, TextHAlign.Center, TextVAlign.Top, bold: true);
 

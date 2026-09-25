@@ -5,7 +5,8 @@ namespace LoupixDeck.Plugin.HomeAssistant.Commands;
 /// contain <c>EntityId</c> keep working unchanged; the host drops empty pieces when it parses a
 /// command string back, so missing trailing values simply fall back to the automatic presentation.
 /// </summary>
-internal sealed record ButtonDisplayOptions(string? Label, string? Icon, bool ShowIcon)
+internal sealed record ButtonDisplayOptions(string? Label, string? Icon, bool ShowIcon,
+    float? StateTextSize = null, float? LabelTextSize = null)
 {
     public static ButtonDisplayOptions Default { get; } = new(null, null, true);
 
@@ -19,6 +20,17 @@ internal sealed record ButtonDisplayOptions(string? Label, string? Icon, bool Sh
     {
         if (parameters.Length <= 1) return Default;
 
+        float? stateTextSize = null;
+        float? labelTextSize = null;
+        if (parameters.Length >= 4 &&
+            TrySize(parameters[^2], out float stateSize) &&
+            TrySize(parameters[^1], out float labelSize))
+        {
+            stateTextSize = stateSize;
+            labelTextSize = labelSize;
+            parameters = parameters[..^2];
+        }
+
         int index = 1;
         bool showIcon = true;
         bool flagParsed = TryParseFlag(parameters[index], out bool flag);
@@ -28,12 +40,20 @@ internal sealed record ButtonDisplayOptions(string? Label, string? Icon, bool Sh
             index++;
         }
 
-        if (!flagParsed && parameters.Length == 2 && IsIconReference(parameters[index]))
-            return new ButtonDisplayOptions(null, NormalizeIcon(parameters[index]), showIcon);
+        if (index < parameters.Length && parameters.Length == index + 1 && IsIconReference(parameters[index]))
+            return new ButtonDisplayOptions(null, NormalizeIcon(parameters[index]), showIcon, stateTextSize, labelTextSize);
 
         string? label = index < parameters.Length ? NullIfBlank(parameters[index++]) : null;
         string? icon = index < parameters.Length ? NormalizeIcon(parameters[index]) : null;
-        return new ButtonDisplayOptions(label, icon, showIcon);
+        return new ButtonDisplayOptions(label, icon, showIcon, stateTextSize, labelTextSize);
+    }
+
+    private static bool TrySize(string value, out float size)
+    {
+        size = 0;
+        return float.TryParse(value, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out size) &&
+            size is >= 8 and <= 18;
     }
 
     private static bool TryParseFlag(string? value, out bool flag)
@@ -55,7 +75,8 @@ internal sealed record ButtonDisplayOptions(string? Label, string? Icon, bool Sh
     private static string? NormalizeIcon(string? value)
     {
         string? stripped = StripMdiPrefix(value);
-        return string.IsNullOrWhiteSpace(stripped) ? null : stripped.Trim();
+        return string.IsNullOrWhiteSpace(stripped) || stripped.Equals("auto", StringComparison.OrdinalIgnoreCase)
+            ? null : stripped.Trim();
     }
 
     /// <summary>Strips the <c>mdi:</c> prefix Home Assistant uses and returns the bare symbol id.</summary>
@@ -69,5 +90,6 @@ internal sealed record ButtonDisplayOptions(string? Label, string? Icon, bool Sh
     }
 
     private static string? NullIfBlank(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        string.IsNullOrWhiteSpace(value) || value.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase)
+            ? null : value.Trim();
 }

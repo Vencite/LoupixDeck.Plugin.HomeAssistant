@@ -115,11 +115,32 @@ internal static class CommandSmoke
         var labelCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office", "True", "Biuro"), labelCanvas);
         Check(labelCanvas.Texts[1].Text.StartsWith("Biuro", StringComparison.Ordinal), "custom label wins over friendly name");
+        Check(labelCanvas.SymbolSize > activeCanvas.SymbolSize, "short label gives the icon more room");
+
+        var sizedCanvas = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office", "True", "Biuro",
+            "auto", "16", "18"), sizedCanvas);
+        Check(sizedCanvas.Texts[0].FontSize == 16 && sizedCanvas.Texts[1].FontSize == 18,
+            "per-button state and label sizes are applied");
+        CheckLayout(sizedCanvas, "custom text sizes keep the layout disjoint");
+        var sizedLongCanvas = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.long_name", "True", "auto",
+            "auto", "18", "18"), sizedLongCanvas);
+        CheckLayout(sizedLongCanvas, "large text on a two-line label keeps the layout disjoint");
 
         var iconCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office", "True", "", "mdi:lightbulb"), iconCanvas);
         Check(iconCanvas.Symbols.Contains("lightbulb"), "custom mdi icon is drawn");
         Check(iconCanvas.FilledCircles == 0 && iconCanvas.OutlinedCircles == 0, "icon replaces the circle indicator");
+
+        var iconOnlyCanvas = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office", "True", "auto",
+            "mdi:lightbulb", "11", "13"), iconOnlyCanvas);
+        Check(iconOnlyCanvas.Symbols.Contains("lightbulb") && iconOnlyCanvas.Texts[1].Text != "mdi:lightbulb",
+            "icon-only override survives host removal of blank label parameter");
+        var compactIconCanvas = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office", "True", "mdi:lightbulb"), compactIconCanvas);
+        Check(compactIconCanvas.Symbols.Contains("lightbulb"), "legacy icon-only override survives a missing label");
 
         var entityIconCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.desk"), entityIconCanvas);
@@ -436,17 +457,18 @@ internal static class CommandSmoke
         public int OutlinedCircles { get; private set; }
         public List<TextBox> Texts { get; } = [];
         public List<string> Symbols { get; } = [];
+        public int SymbolSize { get; private set; }
         public int IndicatorTop { get; private set; }
         public int IndicatorBottom { get; private set; }
         public bool HasIndicator { get; private set; }
 
         public void DrawText(string text, int x, int y, int width, int height, PluginColor color, float fontSize,
             bool bold = false, bool italic = false, bool centered = true, bool outlined = false,
-            PluginColor outlineColor = default) => Texts.Add(new TextBox(text, y, height));
+            PluginColor outlineColor = default) => Texts.Add(new TextBox(text, y, height, fontSize));
 
         public void DrawText(string text, int x, int y, int width, int height, PluginColor color, float fontSize,
             TextHAlign hAlign, TextVAlign vAlign, bool bold = false, bool italic = false, bool outlined = false,
-            PluginColor outlineColor = default) => Texts.Add(new TextBox(text, y, height));
+            PluginColor outlineColor = default) => Texts.Add(new TextBox(text, y, height, fontSize));
 
         public void FillCircle(int centerX, int centerY, int radius, PluginColor color)
         {
@@ -482,6 +504,7 @@ internal static class CommandSmoke
         public void DrawSymbol(string symbolId, int x, int y, int width, int height, PluginColor tint)
         {
             Symbols.Add(symbolId);
+            SymbolSize = width;
             HasIndicator = true;
             IndicatorTop = y;
             IndicatorBottom = y + height;
@@ -512,5 +535,5 @@ internal static class CommandSmoke
             $"{name} (name inside the button)");
     }
 
-    private sealed record TextBox(string Text, int Top, int Height);
+    private sealed record TextBox(string Text, int Top, int Height, float FontSize);
 }
