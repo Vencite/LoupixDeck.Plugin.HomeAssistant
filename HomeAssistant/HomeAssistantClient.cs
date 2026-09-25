@@ -27,6 +27,16 @@ public sealed class HomeAssistantClient(IPluginLogger logger) : IAsyncDisposable
 
     /// <summary>Raised after a reconnect is authenticated, before subscriptions are restored.</summary>
     public event EventHandler? ConnectionRestored;
+    public event EventHandler? ConnectionStateChanged;
+
+    private void NotifyConnectionState()
+    {
+        foreach (EventHandler handler in ConnectionStateChanged?.GetInvocationList() ?? [])
+        {
+            try { handler(this, EventArgs.Empty); }
+            catch (Exception ex) { logger.Warn($"Connection status callback failed ({ex.GetType().Name})."); }
+        }
+    }
 
     public HomeAssistantConnectionState State
     {
@@ -167,11 +177,41 @@ public sealed class HomeAssistantClient(IPluginLogger logger) : IAsyncDisposable
         if (target is not null && !HomeAssistantIdentifiers.IsEntityId(target))
             throw new ArgumentException("Provide a Home Assistant entity id such as light.office.", nameof(entityId));
 
-        await SendRequestAsync(
-            id => target is null
-                ? (object)new { id, type = "call_service", domain, service }
-                : new { id, type = "call_service", domain, service, target = new { entity_id = target } },
-            false, cancellationToken).ConfigureAwait(false);
+        await CallServiceAsync(domain, service,
+            target is null ? null : JsonSerializer.SerializeToElement(new { entity_id = target }),
+            null, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task CallServiceAsync(string domain, string service, JsonElement? target,
+        JsonElement? serviceData, CancellationToken cancellationToken = default)
+    {
+        if (!HomeAssistantIdentifiers.IsServiceToken(domain) || !HomeAssistantIdentifiers.IsServiceToken(service))
+            throw new ArgumentException("Invalid service name.");
+        if (serviceData is { ValueKind: not JsonValueKind.Object })
+            throw new ArgumentException("Service data must be a JSON object.");
+        if (target is { } selection)
+        {
+            if (selection.ValueKind != JsonValueKind.Object) throw new ArgumentException("Target must be an object.");
+            foreach (JsonProperty property in selection.EnumerateObject())
+            {
+                if (property.Name is not ("entity_id" or "device_id" or "area_id" or "label_id" or "floor_id"))
+                    throw new ArgumentException("Unsupported target field.");
+                JsonElement[] values = property.Value.ValueKind == JsonValueKind.Array
+                    ? property.Value.EnumerateArray().ToArray() : [property.Value];
+                if (values.Length == 0 || values.Any(value => value.ValueKind != JsonValueKind.String ||
+                    string.IsNullOrWhiteSpace(value.GetString()) ||
+                    (property.Name == "entity_id" && !HomeAssistantIdentifiers.IsEntityId(value.GetString()!))))
+                    throw new ArgumentException("Invalid target identifier.");
+            }
+        }
+        await SendRequestAsync(id =>
+        {
+            var request = new Dictionary<string, object> { ["id"] = id, ["type"] = "call_service",
+                ["domain"] = domain, ["service"] = service };
+            if (target is { } destination) request["target"] = destination;
+            if (serviceData is { } data) request["service_data"] = data;
+            return request;
+        }, false, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task DisconnectAsync()
@@ -283,6 +323,7 @@ public sealed class HomeAssistantClient(IPluginLogger logger) : IAsyncDisposable
                 _state = connectedOnce ? HomeAssistantConnectionState.Reconnecting : HomeAssistantConnectionState.Connecting;
             }
 
+            NotifyConnectionState();
             try
             {
                 logger.Info(connectedOnce ? "Reconnecting to Home Assistant." : "Connecting to Home Assistant.");
@@ -294,6 +335,7 @@ public sealed class HomeAssistantClient(IPluginLogger logger) : IAsyncDisposable
                 }
                 logger.Info("Home Assistant authenticated.");
                 lock (_sync) _state = HomeAssistantConnectionState.Connected;
+                NotifyConnectionState();
                 receiveTask = ReceiveLoopAsync(socket, stopping);
 
                 if (connectedOnce)
@@ -373,6 +415,7 @@ public sealed class HomeAssistantClient(IPluginLogger logger) : IAsyncDisposable
                         ? HomeAssistantConnectionState.Reconnecting
                         : HomeAssistantConnectionState.Disconnected;
                 }
+                NotifyConnectionState();
                 FailPending(new IOException("Home Assistant connection was lost."));
                 logger.Info("Home Assistant disconnected.");
             }
@@ -384,6 +427,7 @@ public sealed class HomeAssistantClient(IPluginLogger logger) : IAsyncDisposable
         }
         firstConnection.TrySetCanceled(stopping);
         lock (_sync) _state = HomeAssistantConnectionState.Disconnected;
+        NotifyConnectionState();
     }
 
     private async Task AuthenticateAsync(ClientWebSocket socket, string token, CancellationToken cancellationToken)

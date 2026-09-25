@@ -1,3 +1,4 @@
+using System.Text.Json;
 using LoupixDeck.Plugin.HomeAssistant.HomeAssistant;
 using LoupixDeck.PluginSdk;
 
@@ -22,6 +23,8 @@ internal static class EntityMenu
         ["humidifier"] = "Humidifiers",
         ["input_boolean"] = "Input booleans",
         ["light"] = "Lights",
+        ["lock"] = "Locks",
+        ["input_number"] = "Input numbers",
         ["media_player"] = "Media players",
         ["scene"] = "Scenes",
         ["sensor"] = "Sensors",
@@ -79,19 +82,59 @@ internal static class EntityMenu
         return areaId is not null && metadata.AreaNames.TryGetValue(areaId, out string? name) ? name : "Other";
     }
 
-    private static IReadOnlyList<MenuNode> Actions(HomeAssistantState entity, string name) => entity.Domain switch
+    private static IReadOnlyList<MenuNode> Actions(HomeAssistantState entity, string name)
     {
-        "sensor" or "binary_sensor" => [Leaf(entity, name, "Show state", ShowEntityCommand.Name)],
-        "scene" => [Leaf(entity, name, "Activate", ActivateSceneCommand.Name)],
-        "script" => [Leaf(entity, name, "Run", RunScriptCommand.Name)],
-        "button" => [Leaf(entity, name, "Press", PressButtonCommand.Name)],
-        _ =>
-        [
+        List<MenuNode> actions = [];
+        void Add(string label, string service, object? data = null) => actions.Add(new MenuNode
+        {
+            Name = $"{name} · {label}", CommandName = EntityServiceCommand.Name,
+            Parameters = new Dictionary<string, string> { ["ShowIcon"] = "True", ["Label"] = "auto", ["Icon"] = "auto",
+                ["StateSize"] = "11", ["LabelSize"] = "13", ["Service"] = service,
+                ["EntityId"] = entity.EntityId, ["ServiceData"] = data is null ? "none" :
+                    Uri.EscapeDataString(JsonSerializer.Serialize(data)) }
+        });
+        void Feature(int flag, string label, string service, object? data = null)
+        {
+            if (EntityCapabilities.Has(entity, flag)) Add(label, service, data);
+        }
+        void Basic() => actions.AddRange([
             Leaf(entity, name, "Toggle", ToggleEntityCommand.Name),
             Leaf(entity, name, "On", TurnOnEntityCommand.Name),
-            Leaf(entity, name, "Off", TurnOffEntityCommand.Name)
-        ]
-    };
+            Leaf(entity, name, "Off", TurnOffEntityCommand.Name)]);
+        switch (entity.Domain)
+        {
+            case "scene": actions.Add(Leaf(entity, name, "Activate", ActivateSceneCommand.Name)); break;
+            case "script": actions.Add(Leaf(entity, name, "Run", RunScriptCommand.Name)); break;
+            case "button": actions.Add(Leaf(entity, name, "Press", PressButtonCommand.Name)); break;
+            case "light":
+                Basic();
+                if (EntityCapabilities.Brightness(entity))
+                    foreach (int value in new[] { 25, 50, 75, 100 }) Add($"Brightness {value}%", "turn_on", new { brightness_pct = value });
+                break;
+            case "cover":
+                Feature(1, "Open", "open_cover"); Feature(2, "Close", "close_cover"); Feature(8, "Stop", "stop_cover");
+                Feature(4, "Position 50%", "set_cover_position", new { position = 50 }); break;
+            case "climate":
+                Feature(256, "On", "turn_on"); Feature(128, "Off", "turn_off");
+                foreach (string mode in EntityCapabilities.Strings(entity, "hvac_modes")) Add(mode, "set_hvac_mode", new { hvac_mode = mode });
+                if (EntityCapabilities.Number(entity, "temperature") is { } temperature)
+                    Feature(1, "Set temperature", "set_temperature", new { temperature });
+                break;
+            case "fan":
+                Feature(32, "On", "turn_on"); Feature(16, "Off", "turn_off");
+                Feature(1, "Speed 50%", "set_percentage", new { percentage = 50 }); break;
+            case "media_player":
+                Feature(128, "On", "turn_on"); Feature(256, "Off", "turn_off");
+                Feature(16384, "Play", "media_play"); Feature(1, "Pause", "media_pause"); Feature(4096, "Stop", "media_stop");
+                Feature(16, "Previous", "media_previous_track"); Feature(32, "Next", "media_next_track");
+                Feature(4, "Volume 50%", "volume_set", new { volume_level = 0.5 }); break;
+            case "lock": Add("Lock", "lock"); Add("Unlock", "unlock"); Feature(1, "Open", "open"); break;
+            case "input_number": Add("Increase", "increment"); Add("Decrease", "decrement"); break;
+            case "automation": case "group": case "humidifier": case "input_boolean": case "siren": case "switch": Basic(); break;
+        }
+        if (actions.Count == 0) actions.Add(Leaf(entity, name, "Show state", ShowEntityCommand.Name));
+        return actions;
+    }
 
     private static MenuNode Leaf(HomeAssistantState entity, string name, string action, string commandName) => new()
     {

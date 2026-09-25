@@ -69,11 +69,11 @@ internal static class CommandSmoke
 
         // Execution forwards the entity id to the matching service call.
         List<IPluginCommand> commands = plugin.GetCommands().ToList();
-        Check(commands.Count == 8, "eight commands registered");
+        Check(commands.Count == 10, "ten commands registered");
         IPluginCommand toggle = commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.ToggleEntity");
         IPluginCommand call = commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.CallService");
         IPluginCommand show = commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.ShowEntity");
-        Check(((IDisplayImageCommand)show).UpdateInterval == TimeSpan.FromSeconds(1), "state display has a one-second polling fallback");
+        Check(((IDisplayImageCommand)show).UpdateInterval == TimeSpan.FromSeconds(5), "state display has a five-second polling fallback");
         int callsBeforeShow = server.Calls.Count;
         await show.Execute(Context(host, "sensor.temp"));
         Check(server.Calls.Count == callsBeforeShow, "sensor display never calls a service");
@@ -98,6 +98,37 @@ internal static class CommandSmoke
 
         await call.Execute(Context(host, "light", "turn on"));
         Check(server.Calls.Count == before + 1, "invalid service is not sent");
+
+        string data = Uri.EscapeDataString("{\"brightness_pct\":50,\"transition\":2}");
+        string targets = Uri.EscapeDataString("{\"entity_id\":[\"light.office\",\"light.desk\"],\"area_id\":\"office\"}");
+        await call.Execute(Context(host, "light", "turn_on", "none", data, targets));
+        Check(server.LastRequest.GetProperty("service_data").GetProperty("transition").GetInt32() == 2 &&
+            server.LastRequest.GetProperty("target").GetProperty("entity_id").GetArrayLength() == 2,
+            "escaped JSON preserves service data and multiple targets on the wire");
+        int advancedCount = server.Calls.Count;
+        await call.Execute(Context(host, "light", "turn_on", "none", "%7Binvalid", targets));
+        await call.Execute(Context(host, "light", "turn_on", "none", data, Uri.EscapeDataString("{\"entity_id\":7}")));
+        Check(server.Calls.Count == advancedCount, "malformed data and targets never reach HA");
+        var dial = (IAdjustmentCommand)commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.AdjustBrightness");
+        Check(plugin.GetDialPresets().Single().Id == "brightness:light.desk", "only dimmable lights have rotary presets");
+        Check(dial.GetValue(Context(host, "light.desk"))?.Normalized > 0.49, "dial reads cached brightness");
+        await dial.ApplyAdjustment(Context(host, "light.desk"), 2);
+        Check(server.LastRequest.GetProperty("service_data").GetProperty("brightness_step_pct").GetInt32() == 10,
+            "dial sends a relative brightness adjustment");
+        await dial.ApplyReset(Context(host, "light.desk"));
+        Check(server.Calls.Last().Service == "toggle", "dial press toggles the light");
+        MenuNode dimmer = domains.Where(child => child.Name == "Lights").SelectMany(child => child.Children).Single(child => child.Name == "Desk");
+        Check(dimmer.Children.Count == 7, "dimmable light offers brightness presets");
+        var serviceCommand = commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.EntityService");
+        MenuNode brightnessLeaf = dimmer.Children.First(child => child.CommandName == serviceCommand.Descriptor.CommandName);
+        string[] serviceParameters = serviceCommand.Descriptor.Parameters.Select(parameter => brightnessLeaf.Parameters[parameter.Name]).ToArray();
+        await serviceCommand.Execute(Context(host, serviceParameters));
+        Check(server.LastRequest.GetProperty("service_data").GetProperty("brightness_pct").GetInt32() == 25,
+            "entity menu action retains its service payload after display parameters");
+        serviceParameters[2] = "Desk";
+        var serviceCanvas = new RecordingCanvas();
+        ((IDisplayImageCommand)serviceCommand).RenderImage(Context(host, serviceParameters), serviceCanvas);
+        Check(serviceCanvas.Texts[1].Text == "Desk", "capability actions retain customizable live labels");
 
         // Rendering reads the cached state and stays synchronous.
         var activeCanvas = new RecordingCanvas();
@@ -125,7 +156,7 @@ internal static class CommandSmoke
 
         var unknownCanvas = new RecordingCanvas();
         Check(((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.ghost"), unknownCanvas) &&
-              unknownCanvas.TextDraws == 1, "unknown entity renders a placeholder");
+              unknownCanvas.Texts[0].Text == "No state", "unknown entity renders a placeholder");
 
         var emptyCanvas = new RecordingCanvas();
         Check(!((IDisplayImageCommand)toggle).RenderImage(Context(host), emptyCanvas), "missing parameter does not render");
@@ -147,6 +178,10 @@ internal static class CommandSmoke
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.long_name", "True", "auto",
             "auto", "18", "18"), sizedLongCanvas);
         CheckLayout(sizedLongCanvas, "large text on a two-line label keeps the layout disjoint");
+        Check(sizedLongCanvas.Texts[1].Height >= 44, "two large label lines fit without clipping");
+        var smallCanvas = new RecordingCanvas { Width = 80, Height = 80 };
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.long_name", "True", "auto", "auto", "18", "18"), smallCanvas);
+        Check(smallCanvas.Texts[1].Height >= 44, "small key prioritizes two readable label lines over the icon");
 
         var iconCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office", "True", "", "mdi:lightbulb"), iconCanvas);
@@ -191,30 +226,16 @@ internal static class CommandSmoke
         Check(friendlyName.Split('\n').Length <= 2, "friendly name wraps to at most two lines");
         Check(friendlyName.Contains('…'), "long friendly name is ellipsized instead of shrinking the font");
 
-        // A live change is pushed to the entity commands, and the redraw reads the updated cache.
+        // Push refresh is bounded and does not invalidate unrelated scene/script/button commands.
+        await Task.Delay(200, timeout.Token);
+        int refreshBase = host.Refreshes.Count;
         await server.PublishStateChangeAsync(timeout.Token);
-        await UntilAsync(() => Task.FromResult(host.Refreshes.Count > 0), timeout.Token);
-        foreach (string name in new[]
-                 {
-                     "HomeAssistant.ToggleEntity", "HomeAssistant.TurnOnEntity", "HomeAssistant.TurnOffEntity",
-                     "HomeAssistant.ActivateScene", "HomeAssistant.RunScript", "HomeAssistant.PressButton",
-                     "HomeAssistant.ShowEntity"
-                 })
-            Check(host.Refreshes.Contains(name), $"entity change refreshes {name}");
-
-        // The first event refreshes immediately instead of waiting for a coalescing window.
-        Check(host.Refreshes.Count >= 7, "first event refreshes without delay");
-
-        // A burst folds into a bounded number of refreshes: the first event refreshes
-        // immediately and the rest fold into one trailing pass — never one per event. Six events
-        // would mean 36 queue entries without coalescing; three back-to-back events all land
-        // inside one debounce window, so the burst costs a single pass here.
-        await Task.Delay(400, timeout.Token);
+        await UntilAsync(() => Task.FromResult(host.Refreshes.Count >= refreshBase + 6), timeout.Token);
+        Check(!host.Refreshes.Skip(refreshBase).Contains("HomeAssistant.ActivateScene"), "light changes leave scene buttons alone");
         int burstBase = host.Refreshes.Count;
         await server.PublishBurstAsync(timeout.Token);
-        await Task.Delay(1000, timeout.Token);
-        int burstRefreshes = host.Refreshes.Count - burstBase;
-        Check(burstRefreshes == 7, $"burst coalesces into one pass (got {burstRefreshes})");
+        await Task.Delay(400, timeout.Token);
+        Check(host.Refreshes.Count - burstBase == 6, "burst coalesces into one relevant refresh pass");
 
         var changedCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office"), changedCanvas);
@@ -222,6 +243,9 @@ internal static class CommandSmoke
             "rendering reflects the pushed state");
 
         plugin.Shutdown();
+        var offlineCanvas = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office"), offlineCanvas);
+        Check(offlineCanvas.Texts[0].Text == "Offline", "disconnection is distinct from off and missing state");
         Console.WriteLine("Home Assistant command smoke check passed.");
     }
 
@@ -250,6 +274,7 @@ internal static class CommandSmoke
 
     private sealed class ControlServer(HttpListener listener, CancellationToken cancellationToken)
     {
+        public JsonElement LastRequest { get; private set; }
         private int _registryRequests;
         public int RegistryRequests => Volatile.Read(ref _registryRequests);
         private readonly List<ServiceCall> _calls = [];
@@ -370,10 +395,11 @@ internal static class CommandSmoke
                                     new { area_id = "garden", name = "Garden" } } });
                             break;
                         case "call_service":
+                            LastRequest = message.RootElement.Clone();
                             string domain = message.RootElement.GetProperty("domain").GetString() ?? "";
                             string service = message.RootElement.GetProperty("service").GetString() ?? "";
                             string? entityId = message.RootElement.TryGetProperty("target", out JsonElement target) &&
-                                               target.TryGetProperty("entity_id", out JsonElement entity)
+                                               target.TryGetProperty("entity_id", out JsonElement entity) && entity.ValueKind == JsonValueKind.String
                                 ? entity.GetString()
                                 : null;
                             lock (_calls) _calls.Add(new ServiceCall(domain, service, entityId));
@@ -418,6 +444,11 @@ internal static class CommandSmoke
             string updated = "2024-01-01T00:00:00+00:00", string? unit = null)
         {
             var attributes = new Dictionary<string, object> { ["friendly_name"] = friendlyName };
+            if (entityId == "light.desk")
+            {
+                attributes["supported_color_modes"] = new[] { "brightness" };
+                attributes["brightness"] = 128;
+            }
             if (icon is not null) attributes["icon"] = icon;
             if (unit is not null) attributes["unit_of_measurement"] = unit;
             return new
@@ -508,8 +539,8 @@ internal static class CommandSmoke
     /// <summary>Counts the drawing primitives the renderer uses without rasterizing anything.</summary>
     private sealed class RecordingCanvas : IRenderCanvas
     {
-        public int Width => 90;
-        public int Height => 90;
+        public int Width { get; init; } = 90;
+        public int Height { get; init; } = 90;
         public int TextDraws => Texts.Count;
         public int FilledCircles { get; private set; }
         public int OutlinedCircles { get; private set; }

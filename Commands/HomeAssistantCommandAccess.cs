@@ -8,8 +8,11 @@ namespace LoupixDeck.Plugin.HomeAssistant.Commands;
 /// </summary>
 internal sealed class HomeAssistantCommandAccess(
     Func<HomeAssistantClient?> client,
-    Func<string, HomeAssistantState?> entity)
+    Func<string, HomeAssistantState?> entity,
+    Func<string?>? status = null)
 {
+    public string? Status => status?.Invoke();
+
     public HomeAssistantClient? Client => client();
 
     public HomeAssistantState? FindEntity(string entityId) => entity(entityId);

@@ -1,85 +1,76 @@
-# LoupixDeck.Plugin.HomeAssistant
+# Home Assistant for LoupixDeck
 
-Direct Home Assistant integration for [LoupixDeck](https://github.com/RadiatorTwo/LoupixDeck).
+Control Home Assistant from [LoupixDeck](https://github.com/RadiatorTwo/LoupixDeck), with live button states and a brightness dial.
 
-![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)
-![MIT License](https://img.shields.io/badge/license-MIT-green)
-![Status: early development](https://img.shields.io/badge/status-early%20development-orange)
-![AI-assisted development](https://img.shields.io/badge/development-AI--assisted-purple)
+**Early development:** no published release yet. Requires .NET 10 and a host compatible with Plugin SDK 1.26.0. Hardware behavior still needs validation in a running host.
 
-## Status
-
-This plugin is under active development. The current repository contains a buildable plugin that can be configured with a Home Assistant URL and access token, keeps a background connection to Home Assistant, synchronizes entity state locally, and exposes control commands with dynamic entity menus and touch-button state feedback. It has not been released yet, and the commands and button rendering have not been validated in a running LoupixDeck host.
-
-## Configuration
-
-Open the plugin's settings in LoupixDeck and fill in:
-
-- **Home Assistant URL** — the base URL of your instance, for example `http://homeassistant.local:8123` or `https://ha.example.com`.
-- **Long-Lived Access Token** — a token created in Home Assistant under your user profile (Security → Long-lived access tokens).
-
-Save the settings; the plugin then connects and keeps the connection alive in the background. The optional **Test Connection** button verifies the saved values without disturbing the running connection.
-
-The token field is masked in the settings UI, and both values are stored by LoupixDeck's standard per-plugin settings store. The token is never logged.
-
-## Features
-
-The implementation currently provides:
-
-- Live entity state synchronization and touch-button feedback
-- Toggle, turn-on, and turn-off actions for a single entity
-- Actions for scripts, scenes, and Home Assistant buttons
-- A generic service-call action for anything the dedicated commands do not cover
-- Dynamic LoupixDeck menus that group entities by Home Assistant area and domain, using cached registry metadata
-- Read-only state buttons for sensors and binary sensors (including sensor units)
-
-All entity commands take one shared `entity_id` parameter, so a single command serves every entity of its kind instead of one command per entity.
-
-Each entity command also accepts optional per-button display overrides stored as trailing parameters: a `ShowIcon` flag, a custom `Label` and a custom `Icon` (a host symbol id, optionally with an `mdi:` prefix). Bindings that only contain `entity_id` keep working unchanged; leaving an override empty falls back to the automatic Home Assistant presentation (friendly name and an icon from entity metadata, device class or domain).
-
-The renderer gives `off`, `unknown`, and `unavailable` distinct colors. Home Assistant icons that are absent from LoupixDeck's built-in symbol library fall back to a supported icon for the entity's device class or domain.
-
-In the command editor, expand the command chip and change **Label** to shorten the text beneath the state (for example, `Lampka`) and **Icon** to a symbol id such as `mdi:lightbulb`. Use `auto` in either field to return to the Home Assistant default. **StateSize** and **LabelSize** set the two text sizes per button (8–18 px). LoupixDeck currently presents the icon parameter as a text field and renders only the symbol ids in its built-in library. Menu actions include the entity name, so searching for a friendly name finds its commands.
-
-If assigning a command adds regular **Text** or **Symbol** layers, hide or remove those layers in the button editor to avoid covering the plugin-rendered state. The plugin's rendered layer is a single image and its text cannot be styled as an independent LoupixDeck layer.
-
-## Installation
-
-There is no usable Home Assistant plugin release yet.
-
-### LoupixDeck Plugin Store
-
-Plugin Store distribution is planned once the plugin reaches a usable release and is accepted into the LoupixDeck catalogue. The plugin is not currently available in the store.
-
-### GitHub Releases
-
-Official releases will include an installable archive produced by the upstream LoupixDeck Plugin SDK release workflow, named `homeassistant-<version>-any.zip`.
-
-Compatible ZIP releases can be installed through LoupixDeck's plugin installation UI. If needed, the archive contents can also be placed manually in the user's LoupixDeck plugin directory.
-
-### Build from source
-
-Install the .NET 10 SDK, then run:
+## Build and install
 
 ```bash
-dotnet restore
 dotnet build -c Release
 ```
 
-This builds the plugin class library, containing the connection, entity-state synchronization and the command layer described above.
+Copy the plugin output from `bin/Release/` and `plugin.json` into LoupixDeck's user plugin directory (`%USERPROFILE%\.config\LoupixDeck\plugins\homeassistant` on Windows), then restart LoupixDeck. Do not copy `LoupixDeck.PluginSdk.dll`; the host supplies it.
 
-## Home Assistant authentication
+## Connect
 
-The connection uses a Home Assistant long-lived access token. Tokens must never be committed to source control.
+1. In Home Assistant, open your profile → **Security** → **Long-lived access tokens** and create a token.
+2. In LoupixDeck, open the Home Assistant plugin settings. Enter your instance URL and token, then save.
+3. Use **Test Connection** to check the saved settings or **Connection Status** to read the current connection state. The plugin reconnects automatically after temporary connection loss.
 
-## AI-assisted development
+The token is masked in the editor and saved by LoupixDeck. Never put it in command parameters.
 
-This project is developed with substantial AI assistance ("vibe coding"), primarily using coding agents such as Codex. Architecture, upstream compatibility, builds, and behavior are reviewed and validated during development. AI-generated changes are treated as code contributions, not as automatically trusted output.
+## Assign buttons and dials
 
-## Development
+- **Buttons:** open the action picker → **Home Assistant** → area → entity type → entity → action. Hidden, disabled and auxiliary entities are omitted. Available actions follow the entity's capabilities.
+- **Sensors:** choose **Show state** for a read-only button; sensor values include units.
+- **Brightness dial:** open rotary presets and choose **entity · Brightness**. Each tick changes brightness by 5%; pressing toggles the light. Only dimmable lights get presets; the indicator shows the cached brightness.
+- **Other controls:** covers offer open/close/stop and position; climate offers supported HVAC modes and target temperature; fans offer speed; media players offer supported playback/volume actions; locks and input numbers have their own actions.
 
-The project targets .NET 10 and uses the LoupixDeck Plugin SDK as a NuGet dependency. It builds as a normal plugin class library. GitHub Actions validates builds; official GitHub Releases are packaged through LoupixDeck's reusable release workflow.
+Value actions start with a preset (for example 50% volume). Expand the assigned command to edit its service data as described below.
+
+## Customize button labels
+
+Expand an entity command in the button editor. These parameters customize the plugin image; formatting a regular host text layer does not change it:
+
+| Parameter | Effect |
+| --- | --- |
+| `ShowIcon` | Show or hide the icon |
+| `Label` | Custom name; `auto` uses the entity name |
+| `Icon` | Host symbol name, such as `mdi:lightbulb`; `auto` uses the entity icon |
+| `StateSize`, `LabelSize` | Text size, 8–18 px |
+
+Long labels wrap to two lines and then shorten with an ellipsis. If the editor adds regular **Text** or **Symbol** layers above the plugin image, hide/remove them to reveal its state display.
+
+Buttons distinguish **off**, **unknown**, **unavailable**, **No state**, **Connecting**, **Reconnecting** and **Offline**. State comes from Home Assistant updates, with a five-second refresh fallback.
+
+## Custom service calls
+
+Choose **Call Service** for advanced actions. Parameters are positional:
+
+`HomeAssistant.CallService(Domain,Service,EntityId,ServiceData,Target)`
+
+- `Domain` and `Service`: for example `light` and `turn_on`.
+- `EntityId`: one entity, or `none` when using `Target`.
+- `ServiceData`: a JSON object, URI-escaped; `none` omits it.
+- `Target`: a URI-escaped JSON object supporting `entity_id`, `device_id`, `area_id`, `label_id` and `floor_id`, each as a string or list. Use `none` to omit it. Do not combine it with `EntityId`.
+
+For example, 50% brightness for an illustrative light:
+
+```text
+HomeAssistant.CallService(light,turn_on,light.example,%7B%22brightness_pct%22%3A50%7D,none)
+```
+
+Use `[Uri]::EscapeDataString('{"brightness_pct":50}')` in PowerShell to encode a JSON object. Encoding is required because the host splits command parameters at commas. Existing calls with just domain, service and entity still work.
+
+## Current limitations
+
+- Rotary support currently covers light brightness.
+- The generic **Call Service** button does not render live entity state or offer the entity display overrides. Actions selected from an entity menu do. Use a separate **Show state** button when needed.
+- The SDK provides a single rendered image, not separately editable text/icon layers. Icon selection is a text field; only the host's built-in symbols render, with a fallback for unsupported Home Assistant icons.
+- Avoid commas, parentheses and semicolons in custom labels: they are command syntax in the host. Use `auto` instead of an empty field to preserve parameter positions.
+- Live updates request refreshes per command type, not per individual entity. Actual host redraw performance has not yet been measured.
 
 ## License
 
-Licensed under the [MIT License](LICENSE).
+MIT. Developed with AI assistance; see [LICENSE](LICENSE).

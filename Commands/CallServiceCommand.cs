@@ -1,3 +1,4 @@
+using System.Text.Json;
 using LoupixDeck.Plugin.HomeAssistant.HomeAssistant;
 using LoupixDeck.PluginSdk;
 
@@ -16,22 +17,24 @@ internal sealed class CallServiceCommand(HomeAssistantCommandAccess access) : IP
         CommandName = Name,
         DisplayName = "Call Service",
         Group = "Home Assistant",
-        Description = "Call any Home Assistant service, optionally targeting one entity.",
-        ParameterTemplate = "({Domain},{Service},{EntityId})",
+        Description = "Call any Home Assistant service, with optional targets and service data (URI-escaped JSON).",
+        ParameterTemplate = "({Domain},{Service},{EntityId},{ServiceData},{Target})",
         Parameters =
         [
             new CommandParameter("Domain", typeof(string)),
             new CommandParameter("Service", typeof(string)),
-            new CommandParameter("EntityId", typeof(string)) { DefaultValue = string.Empty }
+            new CommandParameter("EntityId", typeof(string)) { DefaultValue = "none" },
+            new CommandParameter("ServiceData", typeof(string)) { DefaultValue = "none" },
+            new CommandParameter("Target", typeof(string)) { DefaultValue = "none" }
         ],
-        HiddenFromMenu = true
+        HiddenFromMenu = false
     };
 
     public ButtonTargets SupportedTargets => ButtonTargets.All;
 
     public async Task Execute(CommandContext ctx)
     {
-        if (ctx.Parameters.Length is < 2 or > 3)
+        if (ctx.Parameters.Length is < 2 or > 5)
         {
             ctx.Host.Logger.Warn($"{Name} expects a domain, a service and an optional entity_id.");
             return;
@@ -39,7 +42,7 @@ internal sealed class CallServiceCommand(HomeAssistantCommandAccess access) : IP
 
         string domain = ctx.Parameters[0];
         string service = ctx.Parameters[1];
-        string? entityId = ctx.Parameters.Length == 3 && ctx.Parameters[2].Length > 0 ? ctx.Parameters[2] : null;
+        string? entityId = ctx.Parameters.Length >= 3 && ctx.Parameters[2] is not ("" or "none") ? ctx.Parameters[2] : null;
         if (!HomeAssistantIdentifiers.IsServiceToken(domain) ||
             !HomeAssistantIdentifiers.IsServiceToken(service) ||
             (entityId is not null && !HomeAssistantIdentifiers.IsEntityId(entityId)))
@@ -49,19 +52,27 @@ internal sealed class CallServiceCommand(HomeAssistantCommandAccess access) : IP
         }
 
         HomeAssistantClient? client = access.Client;
-        if (client is null)
+        if (client is null || client.State != HomeAssistantConnectionState.Connected)
         {
-            ctx.Host.Logger.Warn($"{Name}: Home Assistant is not connected.");
             return;
         }
 
         try
         {
-            await client.CallServiceAsync(domain, service, entityId).ConfigureAwait(false);
+            JsonElement? data = Decode(ctx.Parameters.ElementAtOrDefault(3));
+            JsonElement? target = Decode(ctx.Parameters.ElementAtOrDefault(4));
+            if (entityId is not null)
+            {
+                if (target is not null) throw new ArgumentException("Use either EntityId or Target.");
+                target = JsonSerializer.SerializeToElement(new { entity_id = entityId });
+            }
+            await client.CallServiceAsync(domain, service, target, data).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            ctx.Host.Logger.Error($"{Name} failed for {domain}.{service}.", ex);
+            ctx.Host.Logger.Warn($"{Name} failed ({ex.GetType().Name}); check the service and parameters.");
         }
     }
+    private static JsonElement? Decode(string? value) => value is null or "" or "none"
+        ? null : JsonSerializer.Deserialize<JsonElement>(Uri.UnescapeDataString(value));
 }

@@ -40,13 +40,13 @@ internal static class EntityButtonRenderer
         Render(state, entityId, null, canvas);
 
     public static bool Render(HomeAssistantState? state, string entityId,
-        Commands.ButtonDisplayOptions? options, IRenderCanvas canvas)
+        Commands.ButtonDisplayOptions? options, IRenderCanvas canvas, string? connectionStatus = null)
     {
         if (string.IsNullOrWhiteSpace(entityId)) return false;
         if (canvas.Width <= 0 || canvas.Height <= 0) return false;
 
-        bool active = state is not null && IsActive(state.State);
-        PluginColor accent = state?.State switch
+        bool active = connectionStatus is null && state is not null && IsActive(state.State);
+        PluginColor accent = connectionStatus is not null ? Unavailable : state?.State switch
         {
             null => Missing,
             "unavailable" => Unavailable,
@@ -75,15 +75,22 @@ internal static class EntityButtonRenderer
         float stateFont = options?.StateTextSize ?? Math.Max(9f, size / 8f);
         int reservedStateHeight = (int)Math.Ceiling(stateFont * 1.25f);
 
-        int radius = Math.Max(6, Math.Min(size / 5,
-            (height - top - bottom - reservedNameHeight - reservedStateHeight - gap * 2) / 2 - 2));
+        // Reserve both text blocks first, including the full icon stroke. Small keys or large
+        // fonts may leave no room for an icon; text remains readable in that case.
+        int iconSpace = height - top - bottom - reservedNameHeight - reservedStateHeight - gap * 2;
+        int radius = Math.Min(size / 5, Math.Max(0, (iconSpace - 4) / 2));
         int stroke = Math.Max(2, radius / 4);
+        while (radius > 0 && (radius + stroke) * 2 > iconSpace)
+        {
+            radius--;
+            stroke = Math.Max(2, radius / 4);
+        }
         int centerX = width / 2;
         int centerY = top + radius + stroke;
 
         // Hiding the icon removes the whole indicator zone, so the state text and the label move
         // up and use the freed space.
-        bool showIcon = options?.ShowIcon != false;
+        bool showIcon = options?.ShowIcon != false && radius >= 3;
         string? symbol = showIcon ? ResolveSymbol(state, options?.Icon) : null;
         if (showIcon)
         {
@@ -96,8 +103,8 @@ internal static class EntityButtonRenderer
 
         int indicatorBottom = showIcon ? centerY + radius + stroke : top;
 
-        string stateText = state?.State.Trim() ?? string.Empty;
-        if (state?.Domain == "sensor" &&
+        string stateText = connectionStatus ?? state?.State.Trim() ?? "No state";
+        if (connectionStatus is null && state?.Domain == "sensor" &&
             state.Attributes.ValueKind == System.Text.Json.JsonValueKind.Object &&
             state.Attributes.TryGetProperty("unit_of_measurement", out System.Text.Json.JsonElement unit) &&
             unit.ValueKind == System.Text.Json.JsonValueKind.String &&
@@ -121,6 +128,8 @@ internal static class EntityButtonRenderer
         int nameHeight = height - bottom - nameTop;
         if (boxWidth <= 0 || nameHeight <= 0) return true;
 
+        if (nameLines == 2 && nameHeight < reservedNameHeight)
+            fittedName = Ellipsize(label, boxWidth, nameFont, bold: true, canvas);
         canvas.DrawText(fittedName, side, nameTop, boxWidth, nameHeight, accent,
             nameFont, TextHAlign.Center, TextVAlign.Top, bold: true);
 

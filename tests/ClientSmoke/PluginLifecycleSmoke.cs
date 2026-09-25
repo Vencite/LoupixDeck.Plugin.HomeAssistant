@@ -43,7 +43,7 @@ internal static class PluginLifecycleSmoke
 
         // An incomplete configuration is reported without touching the network.
         IReadOnlyList<PluginSettingAction> actions = plugin.SettingsActions;
-        Check(actions.Count == 1 && actions[0].Label == "Test Connection", "settings expose Test Connection");
+        Check(actions.Count == 2 && actions[0].Label == "Test Connection" && actions[1].Label == "Connection Status", "settings expose connection test and status");
         host.Settings.Set("accessToken", "");
         Check(await actions[0].Invoke() == "Access token is missing.", "missing token reported");
         host.Settings.Set("url", "");

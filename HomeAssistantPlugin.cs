@@ -32,7 +32,8 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
         ActivateSceneCommand.Name,
         RunScriptCommand.Name,
         PressButtonCommand.Name,
-        ShowEntityCommand.Name
+        ShowEntityCommand.Name,
+        EntityServiceCommand.Name
     ];
 
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
@@ -46,8 +47,8 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
     private HomeAssistantConnectionSettings? _desired;
     private Task _lifecycle = Task.CompletedTask;
     private long _generation;
-    private long _refreshCoalesced;
-    private CancellationTokenSource? _refreshDebounce;
+    private readonly HashSet<string> _pendingRefresh = new(StringComparer.Ordinal);
+    private bool _refreshScheduled;
     private bool _shuttingDown;
 
     private IReadOnlyList<PluginSettingAction>? _settingsActions;
@@ -86,7 +87,8 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
 
     public IReadOnlyList<PluginSettingAction> SettingsActions => _settingsActions ??=
     [
-        new PluginSettingAction { Label = "Test Connection", Invoke = TestConnectionAsync }
+        new PluginSettingAction { Label = "Test Connection", Invoke = TestConnectionAsync },
+        new PluginSettingAction { Label = "Connection Status", Invoke = () => Task.FromResult(GetConnectionStatus() ?? "Connected") }
     ];
 
     /// <summary>
@@ -175,7 +177,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
 
     public override IEnumerable<IPluginCommand> GetCommands()
     {
-        var access = new HomeAssistantCommandAccess(GetClient, FindEntity);
+        var access = new HomeAssistantCommandAccess(GetClient, FindEntity, GetConnectionStatus);
         return
         [
             new ToggleEntityCommand(access),
@@ -185,7 +187,9 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
             new RunScriptCommand(access),
             new PressButtonCommand(access),
             new ShowEntityCommand(access),
-            new CallServiceCommand(access)
+            new CallServiceCommand(access),
+            new EntityServiceCommand(access),
+            new BrightnessCommand(access)
         ];
     }
 
@@ -236,71 +240,99 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
 
     /// <summary>
     /// Pushes a refresh to the entity commands after an accepted live change. The first event of a
-    /// burst refreshes immediately and the rest fold into one trailing refresh, because the host
-    /// repaints every button of a command and a busy Home Assistant emits events far faster than a
-    /// button needs to be redrawn; the poll interval remains the safety net.
+    /// burst starts a fixed coalescing window. Later changes join the same batch without delaying
+    /// it, so continuous traffic cannot starve refreshes. Polling remains a safety net.
     /// </summary>
     private void OnEntityChanged(object? sender, HomeAssistantStateChangedEvent change)
     {
-        if (_shuttingDown) return;
-        if (Interlocked.Increment(ref _refreshCoalesced) == 1) RefreshEntityButtons();
-        ArmTrailingRefresh();
+        string domain = (change.NewState ?? change.OldState)?.Domain ?? change.EntityId.Split('.')[0];
+        lock (_stateSync)
+        {
+            if (_shuttingDown) return;
+            _pendingRefresh.Add(ShowEntityCommand.Name);
+            _pendingRefresh.Add(EntityServiceCommand.Name);
+            string? dedicated = domain switch
+            {
+                "scene" => ActivateSceneCommand.Name, "script" => RunScriptCommand.Name,
+                "button" => PressButtonCommand.Name, _ => null
+            };
+            if (dedicated is not null) _pendingRefresh.Add(dedicated);
+            else
+            {
+                _pendingRefresh.Add(ToggleEntityCommand.Name);
+                _pendingRefresh.Add(TurnOnEntityCommand.Name);
+                _pendingRefresh.Add(TurnOffEntityCommand.Name);
+            }
+            if (domain == "light") _pendingRefresh.Add(BrightnessCommand.Name);
+            if (_refreshScheduled) return;
+            _refreshScheduled = true;
+        }
+        _ = FlushRefreshAsync();
     }
 
-    /// <summary>Refreshes after a full snapshot install, so a reconnect never leaves stale buttons
-    /// until the safety poll runs.</summary>
-    private void OnStoreSynchronized(object? sender, EventArgs args)
-    {
-        if (_shuttingDown) return;
-        Interlocked.Exchange(ref _refreshCoalesced, 0);
-        CancelTrailingRefresh(Interlocked.Exchange(ref _refreshDebounce, null));
-        RefreshEntityButtons();
-    }
-
-    private void ArmTrailingRefresh()
-    {
-        if (CancelTrailingRefresh(Interlocked.Exchange(ref _refreshDebounce, new CancellationTokenSource())))
-            return;
-        CancellationTokenSource? current = Volatile.Read(ref _refreshDebounce);
-        if (current is null) return;
-        _ = DebouncedRefreshAsync(current, current.Token);
-    }
-
-    /// <summary>Cancels and disposes a pending trailing refresh. Returns false when the new timer
-    /// must still be armed because no newer event replaced it meanwhile.</summary>
-    private bool CancelTrailingRefresh(CancellationTokenSource? previous)
-    {
-        if (previous is null) return false;
-        try { previous.Cancel(); }
-        catch (ObjectDisposedException) { }
-        finally { previous.Dispose(); }
-        return !ReferenceEquals(Volatile.Read(ref _refreshDebounce), previous);
-    }
-
-    private async Task DebouncedRefreshAsync(CancellationTokenSource owner, CancellationToken cancellationToken)
+    private async Task FlushRefreshAsync()
     {
         try
         {
-            await Task.Delay(EntityRefreshDebounce, cancellationToken).ConfigureAwait(false);
-            if (Interlocked.Exchange(ref _refreshCoalesced, 0) > 1) RefreshEntityButtons();
+            await Task.Delay(EntityRefreshDebounce, _lifetime.Token).ConfigureAwait(false);
+            string[] commands;
+            lock (_stateSync)
+            {
+                commands = _pendingRefresh.ToArray();
+                _pendingRefresh.Clear();
+                _refreshScheduled = false;
+                if (_shuttingDown) return;
+            }
+            foreach (string command in commands) _host?.RequestButtonRefresh(command);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _host?.Logger.Warn($"Button refresh failed ({ex.GetType().Name})."); }
+    }
+
+    private void OnStoreSynchronized(object? sender, EventArgs args) => RefreshEntityButtons();
+    private void OnConnectionStateChanged(object? sender, EventArgs args) => RefreshEntityButtons();
+
+    private string? GetConnectionStatus()
+    {
+        lock (_stateSync)
         {
-            // Superseded by a newer event, a snapshot refresh or shutdown.
+            if (_shuttingDown) return "Offline";
+            if (_client is null) return _session is null ? "Offline" : "Connecting";
+            return _client.State switch
+            {
+                HomeAssistantConnectionState.Connected => _store?.IsInitialized == true ? null : "No state",
+                HomeAssistantConnectionState.Reconnecting => "Reconnecting",
+                HomeAssistantConnectionState.Connecting => "Connecting",
+                _ => "Offline"
+            };
         }
-        finally
-        {
-            if (ReferenceEquals(Interlocked.CompareExchange(ref _refreshDebounce, null, owner), owner))
-                owner.Dispose();
-        }
+    }
+
+    public override IEnumerable<DialPresetDescriptor> GetDialPresets()
+    {
+        EntityStore? store;
+        lock (_stateSync) store = _store;
+        return (store?.GetSnapshot() ?? []).Where(entity => EntityCapabilities.Brightness(entity) &&
+            (!store!.MenuMetadata.Entities.TryGetValue(entity.EntityId, out var info) ||
+             !(info.Hidden || info.Disabled || info.Auxiliary))).Select(entity =>
+            new DialPresetDescriptor
+            {
+                Id = $"brightness:{entity.EntityId}", Name = $"{entity.FriendlyName} · Brightness",
+                Actions = Enum.GetValues<RotaryAction>().ToDictionary(action => action, _ => new MenuCommandRef
+                {
+                    CommandName = BrightnessCommand.Name,
+                    Parameters = new Dictionary<string, string> { ["EntityId"] = entity.EntityId }
+                })
+            }).ToArray();
     }
 
     private void RefreshEntityButtons()
     {
         IPluginHost? host = _host;
-        if (host is null) return;
+        if (host is null || _shuttingDown) return;
         foreach (string commandName in EntityCommandNames)
             host.RequestButtonRefresh(commandName);
+        host.RequestButtonRefresh(BrightnessCommand.Name);
     }
 
     // ───────── settings ─────────
@@ -386,6 +418,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
             // Safe here: the successor task is chained after this one, so nothing uses the
             // replaced token any more.
             replaced?.Dispose();
+            RefreshEntityButtons();
         }
     }
 
@@ -455,6 +488,8 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
             return false;
         }
 
+        client.ConnectionStateChanged += OnConnectionStateChanged;
+        RefreshEntityButtons();
         logger.Info($"Entity store initialized with {store.Count} entities.");
         return true;
     }
@@ -498,7 +533,6 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
     {
         EntityStore? store;
         HomeAssistantClient? client;
-        CancellationTokenSource? debounce;
         lock (_stateSync)
         {
             store = _store;
@@ -507,13 +541,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
             _client = null;
         }
 
-        debounce = Interlocked.Exchange(ref _refreshDebounce, null);
-        if (debounce is not null)
-        {
-            try { debounce.Cancel(); }
-            catch (ObjectDisposedException) { }
-            finally { debounce.Dispose(); }
-        }
+        RefreshEntityButtons();
 
         if (store is not null)
         {
@@ -525,6 +553,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
 
         if (client is not null)
         {
+            client.ConnectionStateChanged -= OnConnectionStateChanged;
             try { await client.DisposeAsync().ConfigureAwait(false); }
             catch (Exception ex) { _host?.Logger.Warn($"Home Assistant client cleanup failed ({ex.GetType().Name})."); }
         }
