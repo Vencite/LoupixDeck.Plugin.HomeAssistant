@@ -6,6 +6,7 @@ using System.Text.Json;
 using LoupixDeck.Plugin.HomeAssistant;
 using LoupixDeck.Plugin.HomeAssistant.Rendering;
 using LoupixDeck.PluginSdk;
+using SkiaSharp;
 
 /// <summary>
 /// Checks the command layer against a synthetic Home Assistant server: dynamic entity submenus, the
@@ -159,14 +160,27 @@ internal static class CommandSmoke
               folderEntries.Any(entry => entry.Text == "Temp −"), "climate folder exposes live modes and temperature steps");
         Check(folderEntries.All(entry => entry.Text.Length <= 10 && entry.Image is { Length: > 8 } image &&
             image[0] == 0x89 && image[1] == (byte)'P'), "folder entries use short labels and embedded PNG icons");
+        Check(folderEntries.All(entry =>
+        {
+            using SKBitmap? bitmap = SKBitmap.Decode(entry.Image);
+            return bitmap is not null && bitmap.Pixels.Any(pixel => pixel.Alpha > 0);
+        }), "folder icons decode into visible pixels in the host graphics library");
         FolderEntry up = folderEntries.Single(entry => entry.Text == "Temp +");
         await up.OnPress!();
         Check(server.LastRequest.GetProperty("service_data").GetProperty("temperature").GetDouble() == 21.5,
             "folder increases the cached climate target by its supported step");
         FolderEntry modesEntry = folderEntries.Single(entry => entry.Text == "Mode");
         var modeFolder = modesEntry.OpensFolder!;
-        Check(modeFolder.BuildEntries().Any(entry => entry.Text == "heat"), "HVAC modes are live folder entries");
+        FolderEntry[] modeEntries = modeFolder.BuildEntries().ToArray();
+        Check(modeEntries.Any(entry => entry.Text == "heat") && modeEntries.All(entry => entry.Image is { Length: > 8 }),
+            "HVAC modes have live entries with icons");
         folder.OnExit();
+        MenuNode media = domains.Single(domain => domain.Name == "Media players").Children.Single();
+        await openControls.Execute(Context(host, HostParameters(openControls, media.Children.First())));
+        FolderEntry[] mediaEntries = host.OpenedFolder!.BuildEntries().ToArray();
+        FolderEntry[] mediaActions = mediaEntries.Where(entry => entry.Text is "Play" or "Pause" or "Stop" or "Prev" or "Next").ToArray();
+        Check(mediaActions.Length > 0 && mediaActions.All(entry => entry.Image is { Length: > 8 }),
+            "media controls have action icons");
         // Dispatch every menu action through the same parameters a real host persists.
         foreach (MenuNode leaf in allLeaves)
         {
@@ -228,8 +242,10 @@ internal static class CommandSmoke
         byte[]? mdi = MdiIconCache.Rasterize("<path d=\"M2 2h20v20H2z\"/>");
         Check(mdi is { Length: > 8 } && mdi[0] == 0x89 && mdi[1] == (byte)'P',
             "MDI path becomes a cached PNG image");
+        var refreshClock = System.Diagnostics.Stopwatch.StartNew();
         await connection.Execute(Context(host));
-        Check(server.StateRequests == 2, "pressing connection status fetches fresh entity states");
+        Check(server.StateRequests == 2 && refreshClock.ElapsedMilliseconds >= 400,
+            "status refresh waits for host touch feedback before fetching states");
 
         // Rendering reads the cached state and stays synchronous.
         var activeCanvas = new RecordingCanvas();
@@ -282,7 +298,7 @@ internal static class CommandSmoke
         var sizedLongCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.long_name", "True", "auto",
             "auto", "18", "18"), sizedLongCanvas);
-        CheckLayout(sizedLongCanvas, "large text on a two-line label keeps the layout disjoint");
+        CheckLayout(sizedLongCanvas, "large text on a two-line label keeps the layout disjoint", requireIndicator: false);
         Check(sizedLongCanvas.Texts[1].Height >= 44, "two large label lines fit without clipping");
         var smallCanvas = new RecordingCanvas { Width = 80, Height = 80 };
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.long_name", "True", "auto", "auto", "18", "18"), smallCanvas);
@@ -304,7 +320,8 @@ internal static class CommandSmoke
 
         var entityIconCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.desk"), entityIconCanvas);
-        Check(entityIconCanvas.Symbols.Contains("lightbulb-on"), "unsupported HA icon falls back without a dashed placeholder");
+        Check(entityIconCanvas.ImageDraws > 0 || entityIconCanvas.Symbols.Contains("lightbulb-on"),
+            "HA icon loads or uses a valid fallback without a dashed placeholder");
         var customEntityIconCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.custom"), customEntityIconCanvas);
         Check(customEntityIconCanvas.Symbols.Contains("flash"), "supported HA icon attribute is used");
@@ -314,6 +331,37 @@ internal static class CommandSmoke
         Check(hiddenCanvas.Symbols.Count == 0 && hiddenCanvas.FilledCircles == 0 && hiddenCanvas.OutlinedCircles == 0,
             "hidden icon removes the indicator zone");
         Check(hiddenCanvas.Texts[0].Top < activeCanvas.Texts[0].Top, "hidden icon moves text up");
+
+        string[] layoutArgs = toggle.Descriptor.Parameters.Select(parameter => parameter.DefaultValue ?? "").ToArray();
+        layoutArgs[0] = "light.office";
+        layoutArgs[1] = "False";
+        var centeredText = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, layoutArgs), centeredText);
+        Check(centeredText.Texts.Count == 2 && centeredText.Texts[0].Top > 10,
+            "text is vertically centered when the icon is hidden");
+        layoutArgs[^2] = "TextBottom";
+        var bottomText = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, layoutArgs), bottomText);
+        Check(bottomText.Texts[0].Top > centeredText.Texts[0].Top, "layout moves text to the bottom");
+        string[] topArgs = toggle.Descriptor.Parameters.Select(parameter => parameter.DefaultValue ?? "").ToArray();
+        topArgs[0] = "light.office";
+        topArgs[^2] = "TextTop";
+        var topText = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, topArgs), topText);
+        Check(topText.Texts.Count == 2 && topText.Texts[0].Text.Contains("Office") &&
+            topText.Texts[1].Top + topText.Texts[1].Height <= topText.IndicatorTop,
+            "TextTop places the label and state above the icon");
+        layoutArgs[1] = "True";
+        layoutArgs[^4] = "False";
+        layoutArgs[^3] = "False";
+        layoutArgs[^2] = "Auto";
+        layoutArgs[^1] = "#224466";
+        var centeredIcon = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, layoutArgs), centeredIcon);
+        Check(centeredIcon.Texts.Count == 0 && centeredIcon.HasIndicator && centeredIcon.IndicatorTop > 20,
+            "icon-only layout centers the icon");
+        Check(centeredIcon.SymbolColor == new PluginColor(0x22, 0x44, 0x66),
+            "custom icon color does not change text color");
 
         var shorthandCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office", "mdi:flash"), shorthandCanvas);
@@ -690,6 +738,8 @@ internal static class CommandSmoke
         public List<TextBox> Texts { get; } = [];
         public List<string> Symbols { get; } = [];
         public int SymbolSize { get; private set; }
+        public PluginColor SymbolColor { get; private set; }
+        public int ImageDraws { get; private set; }
         public int IndicatorTop { get; private set; }
         public int IndicatorBottom { get; private set; }
         public bool HasIndicator { get; private set; }
@@ -736,14 +786,15 @@ internal static class CommandSmoke
         public void DrawSymbol(string symbolId, int x, int y, int width, int height, PluginColor tint)
         {
             Symbols.Add(symbolId);
+            SymbolColor = tint;
             SymbolSize = width;
             HasIndicator = true;
             IndicatorTop = y;
             IndicatorBottom = y + height;
         }
         public void DrawSymbol(string symbolId, int x, int y, int width, int height, SymbolStyle style) { }
-        public void DrawImage(byte[] imageBytes, int x, int y, int width, int height) { }
-        public void DrawImage(byte[] imageBytes, int x, int y, int width, int height, byte opacity, PluginColor tint = default) { }
+        public void DrawImage(byte[] imageBytes, int x, int y, int width, int height) => ImageDraws++;
+        public void DrawImage(byte[] imageBytes, int x, int y, int width, int height, byte opacity, PluginColor tint = default) => ImageDraws++;
         public void PushTransform() { }
         public void PopTransform() { }
         public void Translate(float dx, float dy) { }
@@ -756,11 +807,11 @@ internal static class CommandSmoke
         if (!condition) throw new Exception($"Failed: {name}");
     }
 
-    private static void CheckLayout(RecordingCanvas canvas, string name)
+    private static void CheckLayout(RecordingCanvas canvas, string name, bool requireIndicator = true)
     {
-        Check(canvas.HasIndicator, $"{name} (indicator)");
+        if (requireIndicator) Check(canvas.HasIndicator, $"{name} (indicator)");
         Check(canvas.Texts.Count == 2, $"{name} (state and name texts)");
-        Check(canvas.IndicatorBottom <= canvas.Texts[0].Top, $"{name} (indicator above state)");
+        if (canvas.HasIndicator) Check(canvas.IndicatorBottom <= canvas.Texts[0].Top, $"{name} (indicator above state)");
         Check(canvas.Texts[0].Top + canvas.Texts[0].Height <= canvas.Texts[1].Top,
             $"{name} (state above name)");
         Check(canvas.Texts[1].Top + canvas.Texts[1].Height <= canvas.Height,

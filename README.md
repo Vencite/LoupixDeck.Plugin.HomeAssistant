@@ -37,11 +37,15 @@ Expand an entity command in the button editor. These parameters customize the pl
 | Parameter | Effect |
 | --- | --- |
 | `ShowIcon` | Show or hide the icon |
+| `ShowLabel`, `ShowState` | Show or hide the entity name and current state independently |
 | `Label` | Custom name; `auto` uses the entity name |
 | `Icon` | MDI icon name, such as `mdi:lightbulb`; `auto` uses the entity icon |
 | `StateSize`, `LabelSize` | Text size, 8–18 px |
+| `Layout` | `Auto`, `TextTop`, `Center` or `TextBottom`; choose text above or below the icon |
+| `IconColor` | Icon color as `#RRGGBB`; `auto` follows the entity state |
 
 Long labels wrap to two lines and then shorten with an ellipsis. If the editor adds regular **Text** or **Symbol** layers above the plugin image, hide/remove them to reveal its state display.
+`Auto` centers text when the icon is hidden and centers the icon when both text parts are hidden. `TextTop` places the name and state above the icon; `TextBottom` places them below it. The new visibility and layout options are at the end of the parameter list so existing button assignments keep their values.
 
 Find names in the [Material Design Icons catalog](https://pictogrammers.com/library/mdi/). Enter them with the `mdi:` prefix. Icons outside LoupixDeck's built-in set are downloaded on first use from Iconify and cached in memory; until they load, the button shows a fallback. An internet connection is needed for those icons after restarting the plugin.
 

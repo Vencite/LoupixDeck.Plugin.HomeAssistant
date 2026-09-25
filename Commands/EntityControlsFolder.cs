@@ -88,17 +88,20 @@ internal sealed class EntityControlsFolder(IPluginHost host, HomeAssistantComman
     {
         IncreaseTemperatureCommand.Name => "up",
         DecreaseTemperatureCommand.Name => "down",
-        ToggleEntityCommand.Name or TurnOnEntityCommand.Name or TurnOffEntityCommand.Name => "power",
+        ToggleEntityCommand.Name => "power",
+        TurnOnEntityCommand.Name => "on",
+        TurnOffEntityCommand.Name => "off",
         ActivateSceneCommand.Name or RunScriptCommand.Name => "play",
         PressButtonCommand.Name => "press",
         _ => action switch
         {
-            "On" => "power", "Off" => "power", "Toggle" => "power",
+            "On" => "on", "Off" => "off", "Toggle" => "power",
             "Open" => "up", "Close" => "down", "Stop" => "stop",
             "Lock" => "lock", "Unlock" => "unlock", "Press" => "press",
             "Play" => "play", "Pause" => "pause", "Previous" => "prev", "Next" => "next",
             "Increase" => "up", "Decrease" => "down",
-            "heat" => "heat", "cool" => "cool", "off" => "power",
+            "heat" => "heat", "cool" => "cool", "off" => "off",
+            "auto" => "auto", "fan_only" => "fan", "dry" => "dry",
             _ when action.StartsWith("Brightness", StringComparison.Ordinal) => "brightness",
             _ when action.StartsWith("Volume", StringComparison.Ordinal) => "value",
             _ when action.StartsWith("Position", StringComparison.Ordinal) => "value",

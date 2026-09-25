@@ -7,11 +7,9 @@ namespace LoupixDeck.Plugin.HomeAssistant.Rendering;
 /// Draws the cached state of one Home Assistant entity onto a touch button. Strictly synchronous and
 /// cache-only: it never performs network I/O, and a missing entity stays visible as a dim placeholder
 /// so a misconfigured parameter is easy to spot.
-/// The button is split into three stacked, never-overlapping zones: the state indicator on top,
-/// the short state text in the middle and the friendly name at the bottom. Long names are wrapped
-/// to at most two lines and ellipsized instead of shrinking the font.
-/// An optional <see cref="Commands.ButtonDisplayOptions"/> overrides the label and the icon per
-/// button; resolving those overrides touches no network and never throws rendering off.
+/// Visible icon, state and name form a fitted stack with configurable order and vertical placement.
+/// Long names wrap to at most two lines and then ellipsize. Per-button display overrides read only
+/// cached state and icon bytes; rendering never waits for network I/O.
 /// </summary>
 internal static class EntityButtonRenderer
 {
@@ -58,9 +56,9 @@ internal static class EntityButtonRenderer
         int height = canvas.Height;
         int size = Math.Min(width, height);
 
-        int side = Math.Max(2, width / 22);
-        int top = Math.Max(2, height / 22);
-        int bottom = Math.Max(2, height / 22);
+        int side = Math.Max(6, width / 12);
+        int top = Math.Max(5, height / 18);
+        int bottom = Math.Max(5, height / 18);
         int gap = Math.Max(2, height / 45);
         int boxWidth = Math.Max(0, width - side * 2);
 
@@ -68,16 +66,19 @@ internal static class EntityButtonRenderer
             ? custom
             : (state?.FriendlyName ?? entityId.Replace('_', ' ')).Trim();
         if (label.Length == 0) label = entityId;
+        bool showLabel = options?.ShowLabel != false;
+        bool showState = options?.ShowState != false;
         float nameFont = options?.LabelTextSize ?? Math.Max(10f, size / 7f);
-        string fittedName = FitTwoLines(label, boxWidth, nameFont, canvas);
+        string fittedName = showLabel ? FitTwoLines(label, boxWidth, nameFont, canvas) : string.Empty;
         int nameLines = fittedName.Contains('\n') ? 2 : 1;
-        int reservedNameHeight = (int)Math.Ceiling(nameFont * 1.2f * nameLines);
+        int reservedNameHeight = showLabel ? (int)Math.Ceiling(nameFont * 1.2f * nameLines) : 0;
         float stateFont = options?.StateTextSize ?? Math.Max(9f, size / 8f);
-        int reservedStateHeight = (int)Math.Ceiling(stateFont * 1.25f);
+        int reservedStateHeight = showState ? (int)Math.Ceiling(stateFont * 1.25f) : 0;
 
         // Reserve both text blocks first, including the full icon stroke. Small keys or large
         // fonts may leave no room for an icon; text remains readable in that case.
-        int iconSpace = height - top - bottom - reservedNameHeight - reservedStateHeight - gap * 2;
+        int requestedParts = (options?.ShowIcon != false ? 1 : 0) + (showState ? 1 : 0) + (showLabel ? 1 : 0);
+        int iconSpace = height - top - bottom - reservedNameHeight - reservedStateHeight - gap * Math.Max(0, requestedParts - 1);
         int radius = Math.Min(size / 5, Math.Max(0, (iconSpace - 4) / 2));
         int stroke = Math.Max(2, radius / 4);
         while (radius > 0 && (radius + stroke) * 2 > iconSpace)
@@ -86,28 +87,25 @@ internal static class EntityButtonRenderer
             stroke = Math.Max(2, radius / 4);
         }
         int centerX = width / 2;
-        int centerY = top + radius + stroke;
-
-        // Hiding the icon removes the whole indicator zone, so the state text and the label move
-        // up and use the freed space.
         bool showIcon = options?.ShowIcon != false && radius >= 3;
+        int parts = (showIcon ? 1 : 0) + (showState ? 1 : 0) + (showLabel ? 1 : 0);
+        int iconHeight = (radius + stroke) * 2;
+        int contentHeight = (showIcon ? iconHeight : 0) + reservedStateHeight + reservedNameHeight +
+            gap * Math.Max(0, parts - 1);
+        Commands.ButtonLayout layout = options?.Layout ?? Commands.ButtonLayout.Auto;
+        int freeSpace = Math.Max(0, height - top - bottom - contentHeight);
+        int start = top + layout switch
+        {
+            Commands.ButtonLayout.Center => freeSpace / 2,
+            Commands.ButtonLayout.TextBottom => freeSpace,
+            Commands.ButtonLayout.Auto when !showIcon || parts == 1 => freeSpace / 2,
+            _ => 0
+        };
+        PluginColor iconColor = options?.IconColor ?? accent;
         string? symbol = showIcon ? ResolveSymbol(state, options?.Icon) : null;
         string? selectedIcon = showIcon ? SelectedIcon(state, options?.Icon) : null;
         byte[]? mdiImage = selectedIcon is not null && !HostSymbols.Contains(selectedIcon)
             ? MdiIconCache.Get(selectedIcon) : null;
-        if (showIcon)
-        {
-            if (mdiImage is not null)
-                canvas.DrawImage(mdiImage, centerX - radius - stroke, centerY - radius - stroke,
-                    (radius + stroke) * 2, (radius + stroke) * 2, 255, accent);
-            else if (symbol is not null)
-                canvas.DrawSymbol(symbol, centerX - radius - stroke, centerY - radius - stroke,
-                    (radius + stroke) * 2, (radius + stroke) * 2, accent);
-            else if (active) canvas.FillCircle(centerX, centerY, radius, accent);
-            else canvas.DrawCircle(centerX, centerY, radius, stroke, accent);
-        }
-
-        int indicatorBottom = showIcon ? centerY + radius + stroke : top;
 
         string stateText = connectionStatus ?? state?.State.Trim() ?? "No state";
         if (boxWidth < 100 && stateText == "unavailable") stateText = "N/A";
@@ -125,29 +123,45 @@ internal static class EntityButtonRenderer
             unit.ValueKind == System.Text.Json.JsonValueKind.String &&
             unit.GetString() is { Length: > 0 } unitText)
             stateText += $" {unitText}";
-        int nameTop;
-        if (stateText.Length > 0 && boxWidth > 0)
+        int cursor = start, drawn = 0;
+        ReadOnlySpan<int> order = layout == Commands.ButtonLayout.TextTop ? [2, 1, 0] : [0, 1, 2];
+        foreach (int part in order)
         {
-            int stateHeight = Math.Min(reservedStateHeight, Math.Max(0, height - bottom - indicatorBottom - gap));
-            if (stateHeight > 0)
+            if ((part == 0 && !showIcon) || (part == 1 && !showState) || (part == 2 && !showLabel)) continue;
+            if (drawn++ > 0) cursor += gap;
+            if (part == 0)
             {
-                string fittedState = Ellipsize(stateText, boxWidth, stateFont, bold: false, canvas);
-                canvas.DrawText(fittedState, side, indicatorBottom + gap, boxWidth, stateHeight,
-                    accent, stateFont, TextHAlign.Center, TextVAlign.Middle);
-                nameTop = indicatorBottom + gap + stateHeight + gap;
+                int centerY = cursor + radius + stroke;
+                int iconSize = Math.Max(0, iconHeight - 4);
+                int iconX = centerX - iconSize / 2;
+                int iconY = centerY - iconSize / 2;
+                if (mdiImage is not null) canvas.DrawImage(mdiImage, iconX, iconY, iconSize, iconSize, 255, iconColor);
+                else if (symbol is not null) canvas.DrawSymbol(symbol, iconX, iconY, iconSize, iconSize, iconColor);
+                else if (active) canvas.FillCircle(centerX, centerY, radius, iconColor);
+                else canvas.DrawCircle(centerX, centerY, radius, stroke, iconColor);
+                cursor += iconHeight;
             }
-            else nameTop = indicatorBottom + gap;
+            else if (part == 1)
+            {
+                int stateHeight = Math.Min(reservedStateHeight, Math.Max(0, height - bottom - cursor));
+                if (stateHeight > 0 && boxWidth > 0)
+                    canvas.DrawText(Ellipsize(stateText, boxWidth, stateFont, bold: false, canvas), side, cursor,
+                        boxWidth, stateHeight, accent, stateFont, TextHAlign.Center, TextVAlign.Middle);
+                cursor += stateHeight;
+            }
+            else
+            {
+                int nameHeight = Math.Min(reservedNameHeight, Math.Max(0, height - bottom - cursor));
+                if (nameHeight > 0 && boxWidth > 0)
+                {
+                    string name = nameLines == 2 && nameHeight < reservedNameHeight
+                        ? Ellipsize(label, boxWidth, nameFont, bold: true, canvas) : fittedName;
+                    canvas.DrawText(name, side, cursor, boxWidth, nameHeight, accent,
+                        nameFont, TextHAlign.Center, TextVAlign.Top, bold: true);
+                }
+                cursor += nameHeight;
+            }
         }
-        else nameTop = indicatorBottom + gap;
-
-        int nameHeight = height - bottom - nameTop;
-        if (boxWidth <= 0 || nameHeight <= 0) return true;
-
-        if (nameLines == 2 && nameHeight < reservedNameHeight)
-            fittedName = Ellipsize(label, boxWidth, nameFont, bold: true, canvas);
-        canvas.DrawText(fittedName, side, nameTop, boxWidth, nameHeight, accent,
-            nameFont, TextHAlign.Center, TextVAlign.Top, bold: true);
-
         return true;
     }
 

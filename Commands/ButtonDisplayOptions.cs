@@ -1,4 +1,8 @@
+using LoupixDeck.PluginSdk;
+
 namespace LoupixDeck.Plugin.HomeAssistant.Commands;
+
+internal enum ButtonLayout { Auto, TextTop, Center, TextBottom }
 
 /// <summary>
 /// Per-button display overrides carried as stable trailing command parameters. Bindings that only
@@ -6,7 +10,8 @@ namespace LoupixDeck.Plugin.HomeAssistant.Commands;
 /// command string back, so missing trailing values simply fall back to the automatic presentation.
 /// </summary>
 internal sealed record ButtonDisplayOptions(string? Label, string? Icon, bool ShowIcon,
-    float? StateTextSize = null, float? LabelTextSize = null)
+    float? StateTextSize = null, float? LabelTextSize = null, bool ShowLabel = true,
+    bool ShowState = true, ButtonLayout Layout = ButtonLayout.Auto, PluginColor? IconColor = null)
 {
     public static ButtonDisplayOptions Default { get; } = new(null, null, true);
 
@@ -54,6 +59,15 @@ internal sealed record ButtonDisplayOptions(string? Label, string? Icon, bool Sh
         return float.TryParse(value, System.Globalization.NumberStyles.Float,
                 System.Globalization.CultureInfo.InvariantCulture, out size) &&
             size is >= 8 and <= 18;
+    }
+
+    internal static PluginColor? ParseIconColor(string? value)
+    {
+        if (value is null || !value.StartsWith('#') || value.Length != 7) return null;
+        return byte.TryParse(value.AsSpan(1, 2), System.Globalization.NumberStyles.HexNumber, null, out byte red) &&
+            byte.TryParse(value.AsSpan(3, 2), System.Globalization.NumberStyles.HexNumber, null, out byte green) &&
+            byte.TryParse(value.AsSpan(5, 2), System.Globalization.NumberStyles.HexNumber, null, out byte blue)
+            ? new PluginColor(red, green, blue) : null;
     }
 
     private static bool TryParseFlag(string? value, out bool flag)

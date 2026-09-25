@@ -56,6 +56,13 @@ internal abstract class EntityCommand(HomeAssistantCommandAccess access) : IDisp
     {
         string entityId = GetEntityId(ctx.Parameters);
         ButtonDisplayOptions options = ButtonDisplayOptions.FromParameters(ctx.Parameters.Take(6).ToArray());
+        if (ctx.Parameters.Length == Descriptor.Parameters.Count)
+        {
+            if (bool.TryParse(ctx.Parameters[^4], out bool showLabel)) options = options with { ShowLabel = showLabel };
+            if (bool.TryParse(ctx.Parameters[^3], out bool showState)) options = options with { ShowState = showState };
+            if (Enum.TryParse(ctx.Parameters[^2], true, out ButtonLayout layout)) options = options with { Layout = layout };
+            options = options with { IconColor = ButtonDisplayOptions.ParseIconColor(ctx.Parameters[^1]) };
+        }
         if (options.Label is null && DefaultLabel is not null) options = options with { Label = DefaultLabel };
         return EntityButtonRenderer.Render(Access.FindEntity(entityId), entityId, options, canvas, Access.Status);
     }
@@ -68,7 +75,8 @@ internal abstract class EntityCommand(HomeAssistantCommandAccess access) : IDisp
         Group = "Home Assistant",
         Description = description,
         ParameterTemplate = "({EntityId},{ShowIcon},{Label},{Icon},{StateSize (8-18)},{LabelSize (8-18)}" +
-            string.Concat(extra.Select(parameter => ",{" + parameter.Name + "}")) + ")",
+            string.Concat(extra.Select(parameter => ",{" + parameter.Name + "}")) +
+            ",{ShowLabel},{ShowState},{Layout},{IconColor (#RRGGBB)})",
         Parameters =
         [
             new CommandParameter("EntityId", typeof(string)),
@@ -79,7 +87,11 @@ internal abstract class EntityCommand(HomeAssistantCommandAccess access) : IDisp
             new CommandParameter("Icon", typeof(string)) { DefaultValue = "auto" },
             new CommandParameter("StateSize (8-18)", typeof(string)) { DefaultValue = "11" },
             new CommandParameter("LabelSize (8-18)", typeof(string)) { DefaultValue = "13" },
-            ..extra
+            ..extra,
+            new CommandParameter("ShowLabel", typeof(bool)) { DefaultValue = "True" },
+            new CommandParameter("ShowState", typeof(bool)) { DefaultValue = "True" },
+            new CommandParameter("Layout", typeof(ButtonLayout)) { DefaultValue = "Auto" },
+            new CommandParameter("IconColor (#RRGGBB)", typeof(string)) { DefaultValue = "auto" }
         ],
         HiddenFromMenu = true
     };
