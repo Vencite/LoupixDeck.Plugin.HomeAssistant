@@ -159,25 +159,27 @@ internal static class EntityButtonRenderer
         {
             string? classified = (state.Domain, deviceClass.GetString()) switch
             {
-                ("sensor", "temperature") => "thermometer",
-                ("sensor", "humidity") => "water-percent",
-                ("sensor", "battery") => "battery",
-                ("binary_sensor", "motion") => "motion-sensor",
-                ("binary_sensor", "door") => "door",
-                ("binary_sensor", "window") => "window-closed",
+                ("sensor", "temperature") => "brightness-6",
+                ("sensor", "humidity") => "brightness-6",
+                ("sensor", "battery") => "power",
+                ("binary_sensor", "motion") => "eye",
+                ("binary_sensor", "door") => "home",
+                ("binary_sensor", "window") => "home",
                 _ => null
             };
             if (classified is not null) return classified;
         }
+        // LoupixDeck currently resolves only its curated SymbolLibrary ids. Keep defaults there;
+        // an arbitrary MDI name would be drawn as a dashed missing-symbol box.
         return state.Domain switch
         {
-            "light" => state.State == "on" ? "lightbulb" : "lightbulb-outline",
-            "switch" => state.State == "on" ? "toggle-switch" : "toggle-switch-off",
-            "binary_sensor" => "checkbox-blank-circle-outline",
+            "light" => state.State == "on" ? "lightbulb-on" : "lightbulb-off",
+            "switch" => "power",
+            "binary_sensor" => "eye",
             "sensor" => "eye",
             "scene" => "palette",
-            "script" => "script-text",
-            "button" => "gesture-tap-button",
+            "script" => "play",
+            "button" => "power",
             _ => null
         };
     }

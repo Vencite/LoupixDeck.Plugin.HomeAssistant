@@ -92,11 +92,11 @@ internal static class CommandSmoke
         // Rendering reads the cached state and stays synchronous.
         var activeCanvas = new RecordingCanvas();
         bool rendered = ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office"), activeCanvas);
-        Check(rendered && activeCanvas.TextDraws == 2 && activeCanvas.Symbols.Contains("lightbulb"), "active light renders its domain icon");
+        Check(rendered && activeCanvas.TextDraws == 2 && activeCanvas.Symbols.Contains("lightbulb-on"), "active light renders its domain icon");
 
         var inactiveCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "switch.kettle"), inactiveCanvas);
-        Check(inactiveCanvas.Symbols.Contains("toggle-switch-off"), "inactive switch renders its domain icon");
+        Check(inactiveCanvas.Symbols.Contains("power"), "inactive switch renders a supported domain icon");
 
         var sensorCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)show).RenderImage(Context(host, "sensor.temp"), sensorCanvas);
@@ -174,7 +174,7 @@ internal static class CommandSmoke
 
         var changedCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office"), changedCanvas);
-        Check(changedCanvas.Symbols.Contains("lightbulb-outline"),
+        Check(changedCanvas.Symbols.Contains("lightbulb-off"),
             "rendering reflects the pushed state");
 
         plugin.Shutdown();
