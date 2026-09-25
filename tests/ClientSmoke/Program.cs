@@ -56,6 +56,11 @@ Check(added.OldState is null && added.NewState?.State == "on", "added entity eve
 await secondSubscriptionSeen.Task.WaitAsync(timeout.Token);
 HomeAssistantStateChangedEvent removed = await secondEvent.Task.WaitAsync(timeout.Token);
 Check(removed.OldState?.State == "on" && removed.NewState is null, "restored subscription and removed entity event");
+await ThrowsAsync<ArgumentException>(client.CallServiceAsync("Light", "toggle", "light.office"));
+await ThrowsAsync<ArgumentException>(client.CallServiceAsync("light", "turn on", "light.office"));
+await ThrowsAsync<ArgumentException>(client.CallServiceAsync("light", "turn_on", "Light.Office"));
+await client.CallServiceAsync("homeassistant", "toggle", "light.office", timeout.Token);
+await client.CallServiceAsync("script", "turn_on", null, timeout.Token);
 Task<IReadOnlyList<HomeAssistantState>> interrupted = client.GetStatesAsync(timeout.Token);
 await pendingBeforeDisconnectSeen.Task.WaitAsync(timeout.Token);
 await client.DisconnectAsync();
@@ -122,6 +127,29 @@ async Task ServeAsync()
             data = new { entity_id = "sensor.test", old_state = State("on"), new_state = (object?)null }
         } });
         await secondEvent.Task.WaitAsync(timeout.Token);
+        using (JsonDocument serviceCall = await ReadAsync(socket))
+        {
+            Check(serviceCall.RootElement.GetProperty("type").GetString() == "call_service", "service call type");
+            Check(serviceCall.RootElement.GetProperty("domain").GetString() == "homeassistant", "service call domain");
+            Check(serviceCall.RootElement.GetProperty("service").GetString() == "toggle", "service call service");
+            Check(serviceCall.RootElement.GetProperty("target").GetProperty("entity_id").GetString() == "light.office",
+                "service call target");
+            await SendAsync(socket, new
+            {
+                id = serviceCall.RootElement.GetProperty("id").GetInt32(), type = "result", success = true,
+                result = (object?)null
+            });
+        }
+        using (JsonDocument serviceCall = await ReadAsync(socket))
+        {
+            Check(serviceCall.RootElement.GetProperty("type").GetString() == "call_service", "untargeted service call type");
+            Check(!serviceCall.RootElement.TryGetProperty("target", out _), "untargeted service call has no target");
+            await SendAsync(socket, new
+            {
+                id = serviceCall.RootElement.GetProperty("id").GetInt32(), type = "result", success = true,
+                result = (object?)null
+            });
+        }
         using JsonDocument unfinished = await ReadAsync(socket);
         Check(unfinished.RootElement.GetProperty("type").GetString() == "get_states", "pending before disconnect");
         pendingBeforeDisconnectSeen.SetResult();

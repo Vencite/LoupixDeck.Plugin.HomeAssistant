@@ -72,7 +72,7 @@ public sealed class HomeAssistantClient(IPluginLogger logger) : IAsyncDisposable
 
     public async Task<IReadOnlyList<HomeAssistantState>> GetStatesAsync(CancellationToken cancellationToken = default)
     {
-        (_, JsonElement result) = await SendRequestAsync("get_states", false, cancellationToken).ConfigureAwait(false);
+        (_, JsonElement result) = await SendRequestAsync(id => new { id, type = "get_states" }, false, cancellationToken).ConfigureAwait(false);
         if (result.ValueKind != JsonValueKind.Array)
             throw new InvalidDataException("Home Assistant get_states returned a non-array result.");
         try
@@ -95,12 +95,35 @@ public sealed class HomeAssistantClient(IPluginLogger logger) : IAsyncDisposable
                 if (_wantsStateChanges && _subscriptionId.HasValue)
                     return;
             }
-            await SendRequestAsync("subscribe_events", true, cancellationToken).ConfigureAwait(false);
+            await SendRequestAsync(id => new { id, type = "subscribe_events", event_type = "state_changed" }, true, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             _subscriptionGate.Release();
         }
+    }
+
+    /// <summary>
+    /// Calls a Home Assistant service, optionally targeting a single entity. The service and the
+    /// optional entity id are validated locally, so malformed user input never reaches the server.
+    /// </summary>
+    public async Task CallServiceAsync(string domain, string service, string? entityId = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!HomeAssistantIdentifiers.IsServiceToken(domain))
+            throw new ArgumentException("Provide a Home Assistant domain such as light or script.", nameof(domain));
+        if (!HomeAssistantIdentifiers.IsServiceToken(service))
+            throw new ArgumentException("Provide a Home Assistant service such as toggle or turn_on.", nameof(service));
+
+        string? target = string.IsNullOrWhiteSpace(entityId) ? null : entityId.Trim();
+        if (target is not null && !HomeAssistantIdentifiers.IsEntityId(target))
+            throw new ArgumentException("Provide a Home Assistant entity id such as light.office.", nameof(entityId));
+
+        await SendRequestAsync(
+            id => target is null
+                ? (object)new { id, type = "call_service", domain, service }
+                : new { id, type = "call_service", domain, service, target = new { entity_id = target } },
+            false, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task DisconnectAsync()
@@ -245,7 +268,7 @@ public sealed class HomeAssistantClient(IPluginLogger logger) : IAsyncDisposable
                     {
                         lock (_sync) restore = _wantsStateChanges && _subscriptionId is null;
                         if (restore)
-                            await SendRequestAsync("subscribe_events", true, stopping).ConfigureAwait(false);
+                            await SendRequestAsync(id => new { id, type = "subscribe_events", event_type = "state_changed" }, true, stopping).ConfigureAwait(false);
                     }
                     finally { _subscriptionGate.Release(); }
                 }
@@ -334,7 +357,7 @@ public sealed class HomeAssistantClient(IPluginLogger logger) : IAsyncDisposable
     }
 
     private async Task<(int Id, JsonElement Result)> SendRequestAsync(
-        string type, bool subscription, CancellationToken cancellationToken)
+        Func<int, object> buildMessage, bool subscription, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         int id = Interlocked.Increment(ref _nextId);
@@ -354,10 +377,7 @@ public sealed class HomeAssistantClient(IPluginLogger logger) : IAsyncDisposable
         using var registration = cancellationToken.Register(() => CancelPending(id, cancellationToken));
         try
         {
-            object message = subscription
-                ? new { id, type, event_type = "state_changed" }
-                : new { id, type };
-            Task send = SendJsonAsync(socket, message, cancellationToken, sessionToken);
+            Task send = SendJsonAsync(socket, buildMessage(id), cancellationToken, sessionToken);
             try
             {
                 await send.WaitAsync(cancellationToken).ConfigureAwait(false);
