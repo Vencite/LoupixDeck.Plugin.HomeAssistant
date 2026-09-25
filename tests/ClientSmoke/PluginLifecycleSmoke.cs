@@ -28,7 +28,7 @@ internal static class PluginLifecycleSmoke
         using var listener = new HttpListener();
         listener.Prefixes.Add($"http://127.0.0.1:{port}/");
         listener.Start();
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
         var server = new SyntheticServer(listener, timeout.Token);
         _ = server.RunAsync();
@@ -86,7 +86,63 @@ internal static class PluginLifecycleSmoke
         Check(server.ConnectionCount == afterShutdown, "shutdown stops reconnecting");
 
         plugin.Shutdown(); // Must be safe to repeat.
+
+        // An unreachable endpoint keeps the initial connection in its retry loop, which both a
+        // settings save and a shutdown must cancel immediately.
+        int unreachablePort = FreePort();
+        string unreachableUrl = $"http://127.0.0.1:{unreachablePort}";
+
+        var retryLogger = new CapturingLogger();
+        var retryHost = new FakeHost(retryLogger);
+        retryHost.Settings.Set("url", unreachableUrl);
+        retryHost.Settings.Set("accessToken", "retry-a");
+        var retryPlugin = new HomeAssistantPlugin();
+        retryPlugin.Initialize(retryHost);
+        await retryLogger.WaitForCountAsync(RetryFailed, 2, timeout.Token);
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        retryPlugin.Shutdown();
+        stopwatch.Stop();
+        Check(stopwatch.Elapsed < TimeSpan.FromSeconds(4), "shutdown does not wait out the retry timeout");
+        Check(retryLogger.Count("Home Assistant runtime stopped.") == 1, "retry scenario stopped cleanly");
+        int retryFailures = retryLogger.Count(RetryFailed);
+        await Task.Delay(TimeSpan.FromSeconds(3), timeout.Token);
+        Check(retryLogger.Count(RetryFailed) == retryFailures, "shutdown stopped the retry loop");
+
+        var switchedLogger = new CapturingLogger();
+        var switchedHost = new FakeHost(switchedLogger);
+        switchedHost.Settings.Set("url", unreachableUrl);
+        switchedHost.Settings.Set("accessToken", "retry-b");
+        var switchedPlugin = new HomeAssistantPlugin();
+        switchedPlugin.Initialize(switchedHost);
+        await switchedLogger.WaitForCountAsync(RetryFailed, 1, timeout.Token);
+
+        switchedHost.Settings.Set("url", url);
+        switchedHost.Settings.Set("accessToken", "retry-c");
+        switchedPlugin.OnSettingsSaved();
+        await UntilAsync(() => server.IsActive("retry-c"), timeout.Token);
+        int switchedFailures = switchedLogger.Count(RetryFailed);
+        await Task.Delay(TimeSpan.FromSeconds(2), timeout.Token);
+        Check(switchedLogger.Count(RetryFailed) == switchedFailures, "settings save stopped the retry loop");
+        switchedPlugin.Shutdown();
+
         Console.WriteLine("HomeAssistantPlugin lifecycle smoke check passed.");
+    }
+
+    private const string RetryFailed = "Initial connection to Home Assistant failed";
+
+    private static int FreePort()
+    {
+        using var probe = new TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+        return port;
+    }
+
+    private static async Task UntilAsync(Func<bool> condition, CancellationToken cancellationToken)
+    {
+        while (!condition()) await Task.Delay(20, cancellationToken);
     }
 
     private sealed class SyntheticServer(HttpListener listener, CancellationToken cancellationToken)
@@ -214,9 +270,9 @@ internal static class PluginLifecycleSmoke
         }
     }
 
-    private sealed class FakeHost : IPluginHost
+    private sealed class FakeHost(IPluginLogger? logger = null) : IPluginHost
     {
-        public IPluginLogger Logger { get; } = new SilentLifecycleLogger();
+        public IPluginLogger Logger { get; } = logger ?? new SilentLifecycleLogger();
         public IPluginSettings Settings { get; } = new FakeSettings();
         public string CurrentLanguage => "en";
         public string Tr(string english) => english;
@@ -260,6 +316,24 @@ internal static class PluginLifecycleSmoke
         public void Info(string message) { }
         public void Warn(string message) { }
         public void Error(string message, Exception? exception = null) { }
+    }
+
+    /// <summary>Keeps the plugin's lifecycle messages so the retry loop can be observed.</summary>
+    private sealed class CapturingLogger : IPluginLogger
+    {
+        private readonly ConcurrentQueue<string> _messages = new();
+
+        public void Info(string message) => _messages.Enqueue(message);
+        public void Warn(string message) => _messages.Enqueue(message);
+        public void Error(string message, Exception? exception = null) => _messages.Enqueue(message);
+
+        public int Count(string prefix) =>
+            _messages.Count(message => message.StartsWith(prefix, StringComparison.Ordinal));
+
+        public async Task WaitForCountAsync(string prefix, int expected, CancellationToken cancellationToken)
+        {
+            while (Count(prefix) < expected) await Task.Delay(20, cancellationToken);
+        }
     }
 
     private static void Check(bool condition, string name)
