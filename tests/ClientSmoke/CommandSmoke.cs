@@ -92,6 +92,18 @@ internal static class CommandSmoke
         var emptyCanvas = new RecordingCanvas();
         Check(!((IDisplayImageCommand)toggle).RenderImage(Context(host), emptyCanvas), "missing parameter does not render");
 
+        // Layout zones never overlap: indicator, state text and the friendly name each own
+        // a disjoint vertical band, even for a long friendly name.
+        CheckLayout(activeCanvas, "short layout zones are disjoint");
+        var longCanvas = new RecordingCanvas();
+        Check(((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.long_name"), longCanvas),
+            "long friendly name renders");
+        Check(longCanvas.TextDraws == 2, "long friendly name keeps the state text");
+        CheckLayout(longCanvas, "long layout zones are disjoint");
+        string friendlyName = longCanvas.Texts[1].Text;
+        Check(friendlyName.Split('\n').Length <= 2, "friendly name wraps to at most two lines");
+        Check(friendlyName.Contains('…'), "long friendly name is ellipsized instead of shrinking the font");
+
         // A live change is pushed to the entity commands, and the redraw reads the updated cache.
         await server.PublishStateChangeAsync(timeout.Token);
         await UntilAsync(() => Task.FromResult(host.Refreshes.Count > 0), timeout.Token);
@@ -243,6 +255,7 @@ internal static class CommandSmoke
         private static object[] States() =>
         [
             State("light.office", "on", "Office Light"),
+            State("light.long_name", "on", "Bardzo Długa Nazwa Encji Testowej Do Sprawdzenia"),
             State("switch.kettle", "off", "Kettle"),
             State("scene.movie", "on", "Movie Night"),
             State("script.goodnight", "off", "Goodnight"),
@@ -340,22 +353,40 @@ internal static class CommandSmoke
     {
         public int Width => 90;
         public int Height => 90;
-        public int TextDraws { get; private set; }
+        public int TextDraws => Texts.Count;
         public int FilledCircles { get; private set; }
         public int OutlinedCircles { get; private set; }
+        public List<TextBox> Texts { get; } = [];
+        public int IndicatorTop { get; private set; }
+        public int IndicatorBottom { get; private set; }
+        public bool HasIndicator { get; private set; }
 
         public void DrawText(string text, int x, int y, int width, int height, PluginColor color, float fontSize,
             bool bold = false, bool italic = false, bool centered = true, bool outlined = false,
-            PluginColor outlineColor = default) => TextDraws++;
+            PluginColor outlineColor = default) => Texts.Add(new TextBox(text, y, height));
 
         public void DrawText(string text, int x, int y, int width, int height, PluginColor color, float fontSize,
             TextHAlign hAlign, TextVAlign vAlign, bool bold = false, bool italic = false, bool outlined = false,
-            PluginColor outlineColor = default) => TextDraws++;
+            PluginColor outlineColor = default) => Texts.Add(new TextBox(text, y, height));
 
-        public void FillCircle(int centerX, int centerY, int radius, PluginColor color) => FilledCircles++;
+        public void FillCircle(int centerX, int centerY, int radius, PluginColor color)
+        {
+            FilledCircles++;
+            TrackIndicator(centerY, radius);
+        }
 
-        public void DrawCircle(int centerX, int centerY, int radius, int strokeWidth, PluginColor color) =>
+        public void DrawCircle(int centerX, int centerY, int radius, int strokeWidth, PluginColor color)
+        {
             OutlinedCircles++;
+            TrackIndicator(centerY, radius + strokeWidth);
+        }
+
+        private void TrackIndicator(int centerY, int extent)
+        {
+            HasIndicator = true;
+            IndicatorTop = centerY - extent;
+            IndicatorBottom = centerY + extent;
+        }
 
         public void Clear(PluginColor color) { }
         public void FillRectangle(int x, int y, int width, int height, PluginColor color) { }
@@ -367,7 +398,8 @@ internal static class CommandSmoke
         public void DrawArc(int x, int y, int width, int height, float startAngle, float sweepAngle, int strokeWidth, PluginColor color) { }
         public void FillArc(int x, int y, int width, int height, float startAngle, float sweepAngle, PluginColor color) { }
         public void DrawLine(int x1, int y1, int x2, int y2, int strokeWidth, PluginColor color) { }
-        public float MeasureText(string text, float fontSize, bool bold = false, bool italic = false) => 0;
+        public float MeasureText(string text, float fontSize, bool bold = false, bool italic = false) =>
+            text.Sum(character => character == ' ' ? fontSize * 0.3f : fontSize * 0.6f);
         public void DrawSymbol(string symbolId, int x, int y, int width, int height, PluginColor tint) { }
         public void DrawSymbol(string symbolId, int x, int y, int width, int height, SymbolStyle style) { }
         public void DrawImage(byte[] imageBytes, int x, int y, int width, int height) { }
@@ -383,4 +415,17 @@ internal static class CommandSmoke
     {
         if (!condition) throw new Exception($"Failed: {name}");
     }
+
+    private static void CheckLayout(RecordingCanvas canvas, string name)
+    {
+        Check(canvas.HasIndicator, $"{name} (indicator)");
+        Check(canvas.Texts.Count == 2, $"{name} (state and name texts)");
+        Check(canvas.IndicatorBottom <= canvas.Texts[0].Top, $"{name} (indicator above state)");
+        Check(canvas.Texts[0].Top + canvas.Texts[0].Height <= canvas.Texts[1].Top,
+            $"{name} (state above name)");
+        Check(canvas.Texts[1].Top + canvas.Texts[1].Height <= canvas.Height,
+            $"{name} (name inside the button)");
+    }
+
+    private sealed record TextBox(string Text, int Top, int Height);
 }
