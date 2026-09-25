@@ -55,7 +55,7 @@ internal static class CommandSmoke
             "device area is used when the entity has no direct area");
         Check(!domains.SelectMany(domain => domain.Children).Any(entity => entity.Name == "Hidden"),
             "hidden registry entities are excluded from the picker");
-        Check(office.Children.Count == 3, "light offers three actions");
+        Check(office.Children.Count == 4, "light offers a controls folder and three actions");
         Check(office.Children.Any(child => child.Name == "Office Light · Toggle" && child.CommandName == "HomeAssistant.ToggleEntity"),
             "light toggle leaf");
         Check(office.Children.All(child => child.Name.Contains("Office Light", StringComparison.OrdinalIgnoreCase)),
@@ -63,13 +63,13 @@ internal static class CommandSmoke
         Check(office.Children.All(child => child.Parameters["EntityId"] == "light.office"), "leaf bakes the entity id");
 
         MenuNode movie = domains.Single(child => child.Name == "Scenes").Children.Single(child => child.Name == "Movie Night");
-        Check(movie.Children.Single().CommandName == "HomeAssistant.ActivateScene", "scene has its own action");
-        Check(domains.Single(child => child.Name == "Buttons").Children.Single().Children.Single().CommandName == "HomeAssistant.PressButton",
+        Check(movie.Children.Any(child => child.CommandName == "HomeAssistant.ActivateScene"), "scene has its own action");
+        Check(domains.Single(child => child.Name == "Buttons").Children.Single().Children.Any(child => child.CommandName == "HomeAssistant.PressButton"),
             "button has its own action");
 
         // Execution forwards the entity id to the matching service call.
         List<IPluginCommand> commands = plugin.GetCommands().ToList();
-        Check(commands.Count == 10, "ten commands registered");
+        Check(commands.Count == 13, "thirteen commands registered");
         IPluginCommand toggle = commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.ToggleEntity");
         IPluginCommand call = commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.CallService");
         IPluginCommand show = commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.ShowEntity");
@@ -118,10 +118,10 @@ internal static class CommandSmoke
         await dial.ApplyReset(Context(host, "light.desk"));
         Check(server.Calls.Last().Service == "toggle", "dial press toggles the light");
         MenuNode dimmer = domains.Where(child => child.Name == "Lights").SelectMany(child => child.Children).Single(child => child.Name == "Desk");
-        Check(dimmer.Children.Count == 7, "dimmable light offers brightness presets");
+        Check(dimmer.Children.Count == 8, "dimmable light offers a folder and brightness presets");
         var serviceCommand = commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.EntityService");
         MenuNode brightnessLeaf = dimmer.Children.First(child => child.CommandName == serviceCommand.Descriptor.CommandName);
-        string[] serviceParameters = serviceCommand.Descriptor.Parameters.Select(parameter => brightnessLeaf.Parameters[parameter.Name]).ToArray();
+        string[] serviceParameters = HostParameters(serviceCommand, brightnessLeaf);
         await serviceCommand.Execute(Context(host, serviceParameters));
         Check(server.LastRequest.GetProperty("service_data").GetProperty("brightness_pct").GetInt32() == 25,
             "entity menu action retains its service payload after display parameters");
@@ -129,6 +129,89 @@ internal static class CommandSmoke
         var serviceCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)serviceCommand).RenderImage(Context(host, serviceParameters), serviceCanvas);
         Check(serviceCanvas.Texts[1].Text == "Desk", "capability actions retain customizable live labels");
+
+        // The host's real assignment rule must work for every dynamic action, not just light.
+        MenuNode[] allLeaves = domains.SelectMany(domain => domain.Children).SelectMany(entity => entity.Children).ToArray();
+        foreach (MenuNode leaf in allLeaves)
+        {
+            IPluginCommand assignedCommand = commands.Single(command => command.Descriptor.CommandName == leaf.CommandName);
+            string[] assigned = HostParameters(assignedCommand, leaf);
+            Check(assigned.Length > 0 && assigned[0].StartsWith(leaf.Parameters.First().Value.Split('|')[0], StringComparison.Ordinal),
+                $"host can assign {leaf.Name}");
+        }
+        Check(allLeaves.Any(leaf => leaf.Name.Contains("Temperature +")) &&
+              allLeaves.Any(leaf => leaf.Name.Contains("Temperature −")) &&
+              allLeaves.Any(leaf => leaf.Name.Contains("· heat")), "climate exposes separate controls");
+        foreach (string domain in new[] { "light", "cover", "climate", "fan", "media_player", "lock", "input_number", "switch" })
+            Check(allLeaves.Any(leaf => leaf.CommandName == "HomeAssistant.OpenEntityControls" &&
+                leaf.Parameters["EntityId"].StartsWith(domain + '.', StringComparison.Ordinal)),
+                $"{domain} has a dynamic controls folder");
+        MenuNode climate = domains.Single(domain => domain.Name == "Climate").Children.Single();
+        var openControls = commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.OpenEntityControls");
+        await openControls.Execute(Context(host, HostParameters(openControls, climate.Children.First())));
+        Check(host.OpenedFolder is not null, "controls command opens a native SDK folder");
+        IFolderProvider folder = host.OpenedFolder!;
+        folder.OnEnter();
+        var folderEntries = folder.BuildEntries();
+        Check(folderEntries.Any(entry => entry.Text == "HVAC mode" && entry.OpensFolder is not null) &&
+              folderEntries.Any(entry => entry.Text == "Temperature +") &&
+              folderEntries.Any(entry => entry.Text == "Temperature −"), "climate folder exposes live modes and temperature steps");
+        FolderEntry up = folderEntries.Single(entry => entry.Text == "Temperature +");
+        await up.OnPress!();
+        Check(server.LastRequest.GetProperty("service_data").GetProperty("temperature").GetDouble() == 21.5,
+            "folder increases the cached climate target by its supported step");
+        FolderEntry modesEntry = folderEntries.Single(entry => entry.Text == "HVAC mode");
+        var modeFolder = modesEntry.OpensFolder!;
+        Check(modeFolder.BuildEntries().Any(entry => entry.Text == "heat"), "HVAC modes are live folder entries");
+        folder.OnExit();
+        // Dispatch every menu action through the same parameters a real host persists.
+        foreach (MenuNode leaf in allLeaves)
+        {
+            IPluginCommand action = commands.Single(command => command.Descriptor.CommandName == leaf.CommandName);
+            int beforeAction = server.Calls.Count;
+            await action.Execute(Context(host, HostParameters(action, leaf)));
+            if (leaf.CommandName is "HomeAssistant.ShowEntity" or "HomeAssistant.OpenEntityControls")
+            {
+                Check(server.Calls.Count == beforeAction, $"{leaf.Name} does not call a service");
+                continue;
+            }
+            await server.WaitForCallsAsync(beforeAction + 1, timeout.Token);
+            string expectedDomain;
+            string expectedService;
+            if (leaf.CommandName == "HomeAssistant.EntityService")
+            {
+                string[] parts = leaf.Parameters["EntityId"].Split('|', 3);
+                expectedDomain = parts[0].Split('.')[0];
+                expectedService = parts[1];
+            }
+            else if (leaf.CommandName is "HomeAssistant.IncreaseTemperature" or "HomeAssistant.DecreaseTemperature")
+            {
+                expectedDomain = "climate";
+                expectedService = "set_temperature";
+            }
+            else
+            {
+                expectedDomain = leaf.CommandName switch
+                {
+                    "HomeAssistant.ActivateScene" => "scene",
+                    "HomeAssistant.RunScript" => "script",
+                    "HomeAssistant.PressButton" => "button",
+                    _ => "homeassistant"
+                };
+                expectedService = leaf.CommandName switch
+                {
+                    "HomeAssistant.TurnOnEntity" or "HomeAssistant.ActivateScene" or "HomeAssistant.RunScript" => "turn_on",
+                    "HomeAssistant.TurnOffEntity" => "turn_off",
+                    "HomeAssistant.PressButton" => "press",
+                    _ => "toggle"
+                };
+            }
+            Check(server.Calls[beforeAction].Domain == expectedDomain &&
+                  server.Calls[beforeAction].Service == expectedService,
+                $"{leaf.Name} calls the correct HA action");
+        }
+
+
 
         // Rendering reads the cached state and stays synchronous.
         var activeCanvas = new RecordingCanvas();
@@ -230,12 +313,12 @@ internal static class CommandSmoke
         await Task.Delay(200, timeout.Token);
         int refreshBase = host.Refreshes.Count;
         await server.PublishStateChangeAsync(timeout.Token);
-        await UntilAsync(() => Task.FromResult(host.Refreshes.Count >= refreshBase + 6), timeout.Token);
+        await UntilAsync(() => Task.FromResult(host.Refreshes.Count >= refreshBase + 7), timeout.Token);
         Check(!host.Refreshes.Skip(refreshBase).Contains("HomeAssistant.ActivateScene"), "light changes leave scene buttons alone");
         int burstBase = host.Refreshes.Count;
         await server.PublishBurstAsync(timeout.Token);
         await Task.Delay(400, timeout.Token);
-        Check(host.Refreshes.Count - burstBase == 6, "burst coalesces into one relevant refresh pass");
+        Check(host.Refreshes.Count - burstBase == 7, "burst coalesces into one relevant refresh pass");
 
         var changedCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office"), changedCanvas);
@@ -247,6 +330,17 @@ internal static class CommandSmoke
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office"), offlineCanvas);
         Check(offlineCanvas.Texts[0].Text == "Offline", "disconnection is distinct from off and missing state");
         Console.WriteLine("Home Assistant command smoke check passed.");
+    }
+
+    // Host 1.34 CommandBuilder uses only the first menu value, then descriptor/type defaults.
+    // Exercise assignment before execution; directly feeding MenuNode.Parameters hides crashes.
+    private static string[] HostParameters(IPluginCommand command, MenuNode leaf)
+    {
+        var assigned = new Dictionary<string, string> { [leaf.Parameters.First().Key] = leaf.Parameters.First().Value };
+        foreach (var parameter in command.Descriptor.Parameters.Skip(1))
+            assigned.Add(parameter.Name, parameter.DefaultValue ?? (parameter.ParameterType == typeof(bool) ? "False" : ""));
+        return command.Descriptor.Parameters.Select(parameter => assigned[parameter.Name])
+            .Where(value => value.Length > 0).ToArray();
     }
 
     private static CommandContext Context(RecordingHost host, params string[] parameters) => new()
@@ -434,7 +528,13 @@ internal static class CommandSmoke
             State("scene.movie", "on", "Movie Night"),
             State("script.goodnight", "off", "Goodnight"),
             State("button.doorbell", "unknown", "Doorbell"),
-            State("sensor.temp", "21", "Temperature", null, unit: "°C")
+            State("sensor.temp", "21", "Temperature", null, unit: "°C"),
+            State("climate.hall", "heat", "Hall Climate"),
+            State("cover.blind", "open", "Blind"),
+            State("fan.office", "on", "Fan"),
+            State("media_player.tv", "playing", "TV"),
+            State("lock.front", "locked", "Front Lock"),
+            State("input_number.target", "20", "Target")
         ];
 
         private static object State(string entityId, string value, string friendlyName) =>
@@ -449,6 +549,19 @@ internal static class CommandSmoke
                 attributes["supported_color_modes"] = new[] { "brightness" };
                 attributes["brightness"] = 128;
             }
+            if (entityId == "climate.hall")
+            {
+                attributes["supported_features"] = 385;
+                attributes["temperature"] = 21.0;
+                attributes["target_temp_step"] = 0.5;
+                attributes["min_temp"] = 16.0;
+                attributes["max_temp"] = 28.0;
+                attributes["hvac_modes"] = new[] { "off", "heat", "cool" };
+            }
+            if (entityId == "cover.blind") attributes["supported_features"] = 15;
+            if (entityId == "fan.office") attributes["supported_features"] = 49;
+            if (entityId == "media_player.tv") attributes["supported_features"] = 16773;
+            if (entityId == "lock.front") attributes["supported_features"] = 1;
             if (icon is not null) attributes["icon"] = icon;
             if (unit is not null) attributes["unit_of_measurement"] = unit;
             return new
@@ -495,7 +608,8 @@ internal static class CommandSmoke
         public bool IsInExclusiveMode => false;
         public void RequestButtonRefresh(string commandName) => _refreshes.Enqueue(commandName);
         public void ExecuteCommand(string command) { }
-        public void OpenFolder(IFolderProvider provider) { }
+        public IFolderProvider? OpenedFolder { get; private set; }
+        public void OpenFolder(IFolderProvider provider) => OpenedFolder = provider;
         public bool OpenBrowser(string url) => false;
         public void OverlayTouchText(int slot, string text, TimeSpan duration) { }
         public int GetTouchSlotForRotary(int rotaryIndex) => -1;

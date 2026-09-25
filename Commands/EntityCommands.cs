@@ -13,6 +13,7 @@ namespace LoupixDeck.Plugin.HomeAssistant.Commands;
 /// </summary>
 internal abstract class EntityCommand(HomeAssistantCommandAccess access) : IDisplayImageCommand
 {
+    protected readonly HomeAssistantCommandAccess Access = access;
     public abstract CommandDescriptor Descriptor { get; }
 
     public ButtonTargets SupportedTargets => ButtonTargets.All;
@@ -22,19 +23,19 @@ internal abstract class EntityCommand(HomeAssistantCommandAccess access) : IDisp
 
     public virtual async Task Execute(CommandContext ctx)
     {
-        if (ctx.Parameters.Length < 1 || !HomeAssistantIdentifiers.IsEntityId(ctx.Parameters[0]))
+        if (ctx.Parameters.Length < 1 || !HomeAssistantIdentifiers.IsEntityId(GetEntityId(ctx.Parameters)))
         {
             ctx.Host.Logger.Warn($"{Descriptor.CommandName} expects an entity_id as its first parameter such as light.office.");
             return;
         }
 
-        HomeAssistantClient? client = access.Client;
+        HomeAssistantClient? client = Access.Client;
         if (client is null || client.State != HomeAssistantConnectionState.Connected)
         {
             return;
         }
 
-        string entityId = ctx.Parameters[0];
+        string entityId = GetEntityId(ctx.Parameters);
         try
         {
             await CallAsync(client, entityId, ctx.Parameters).ConfigureAwait(false);
@@ -45,13 +46,18 @@ internal abstract class EntityCommand(HomeAssistantCommandAccess access) : IDisp
         }
     }
 
+    protected virtual string GetEntityId(string[] parameters) => parameters.FirstOrDefault() ?? string.Empty;
+
     protected abstract Task CallAsync(HomeAssistantClient client, string entityId, string[] parameters);
+
+    protected virtual string? DefaultLabel => null;
 
     public bool RenderImage(CommandContext ctx, IRenderCanvas canvas)
     {
-        string entityId = ctx.Parameters.Length >= 1 ? ctx.Parameters[0] : string.Empty;
-        return EntityButtonRenderer.Render(access.FindEntity(entityId), entityId,
-            ButtonDisplayOptions.FromParameters(ctx.Parameters.Take(6).ToArray()), canvas, access.Status);
+        string entityId = GetEntityId(ctx.Parameters);
+        ButtonDisplayOptions options = ButtonDisplayOptions.FromParameters(ctx.Parameters.Take(6).ToArray());
+        if (options.Label is null && DefaultLabel is not null) options = options with { Label = DefaultLabel };
+        return EntityButtonRenderer.Render(Access.FindEntity(entityId), entityId, options, canvas, Access.Status);
     }
 
     protected static CommandDescriptor Describe(string commandName, string displayName, string description,
@@ -162,15 +168,24 @@ internal sealed class EntityServiceCommand(HomeAssistantCommandAccess access) : 
     public const string Name = "HomeAssistant.EntityService";
     public override CommandDescriptor Descriptor { get; } = Describe(Name, "Entity action",
         "Call a domain service for one entity, with live state and display options.",
-        new CommandParameter("Service", typeof(string)),
+        new CommandParameter("Service", typeof(string)) { DefaultValue = "auto" },
         new CommandParameter("ServiceData", typeof(string)) { DefaultValue = "none" });
+
+    protected override string GetEntityId(string[] parameters) => base.GetEntityId(parameters).Split('|', 2)[0];
 
     protected override Task CallAsync(HomeAssistantClient client, string entityId, string[] parameters)
     {
-        if (parameters.Length != 8) throw new ArgumentException("Entity action requires a service and data.");
-        var data = parameters[7] == "none" ? (System.Text.Json.JsonElement?)null :
-            System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(Uri.UnescapeDataString(parameters[7]));
-        return client.CallServiceAsync(entityId[..entityId.IndexOf('.')], parameters[6],
+        string[] action = parameters[0].Split('|', 3);
+        string service = parameters.ElementAtOrDefault(6) ?? "auto";
+        string payload = parameters.ElementAtOrDefault(7) ?? "none";
+        if (service == "auto" && action.Length == 3)
+        {
+            service = action[1];
+            payload = action[2];
+        }
+        var data = payload == "none" ? (System.Text.Json.JsonElement?)null :
+            System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(Uri.UnescapeDataString(payload));
+        return client.CallServiceAsync(entityId[..entityId.IndexOf('.')], service,
             System.Text.Json.JsonSerializer.SerializeToElement(new { entity_id = entityId }), data);
     }
 }

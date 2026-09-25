@@ -104,6 +104,14 @@ internal static class EntityButtonRenderer
         int indicatorBottom = showIcon ? centerY + radius + stroke : top;
 
         string stateText = connectionStatus ?? state?.State.Trim() ?? "No state";
+        if (connectionStatus is null && state?.Domain == "climate")
+        {
+            double? target = Commands.EntityCapabilities.Number(state, "temperature");
+            double? low = Commands.EntityCapabilities.Number(state, "target_temp_low");
+            double? high = Commands.EntityCapabilities.Number(state, "target_temp_high");
+            if (target is { } value) stateText += $" · {value:0.#}°";
+            else if (low is { } lower && high is { } upper) stateText += $" · {lower:0.#}–{upper:0.#}°";
+        }
         if (connectionStatus is null && state?.Domain == "sensor" &&
             state.Attributes.ValueKind == System.Text.Json.JsonValueKind.Object &&
             state.Attributes.TryGetProperty("unit_of_measurement", out System.Text.Json.JsonElement unit) &&

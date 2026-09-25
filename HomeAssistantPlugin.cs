@@ -33,7 +33,10 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
         RunScriptCommand.Name,
         PressButtonCommand.Name,
         ShowEntityCommand.Name,
-        EntityServiceCommand.Name
+        EntityServiceCommand.Name,
+        IncreaseTemperatureCommand.Name,
+        DecreaseTemperatureCommand.Name,
+        OpenEntityControlsCommand.Name
     ];
 
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
@@ -41,6 +44,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
     private readonly CancellationTokenSource _lifetime = new();
 
     private IPluginHost? _host;
+    private HomeAssistantCommandAccess? _commandAccess;
     private HomeAssistantClient? _client;
     private EntityStore? _store;
     private CancellationTokenSource? _session;
@@ -177,7 +181,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
 
     public override IEnumerable<IPluginCommand> GetCommands()
     {
-        var access = new HomeAssistantCommandAccess(GetClient, FindEntity, GetConnectionStatus);
+        var access = _commandAccess ??= new HomeAssistantCommandAccess(GetClient, FindEntity, GetConnectionStatus);
         return
         [
             new ToggleEntityCommand(access),
@@ -189,7 +193,10 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
             new ShowEntityCommand(access),
             new CallServiceCommand(access),
             new EntityServiceCommand(access),
-            new BrightnessCommand(access)
+            new BrightnessCommand(access),
+            new IncreaseTemperatureCommand(access),
+            new DecreaseTemperatureCommand(access),
+            new OpenEntityControlsCommand(access, GetCommands)
         ];
     }
 
@@ -251,6 +258,12 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
             if (_shuttingDown) return;
             _pendingRefresh.Add(ShowEntityCommand.Name);
             _pendingRefresh.Add(EntityServiceCommand.Name);
+            _pendingRefresh.Add(OpenEntityControlsCommand.Name);
+            if (domain == "climate")
+            {
+                _pendingRefresh.Add(IncreaseTemperatureCommand.Name);
+                _pendingRefresh.Add(DecreaseTemperatureCommand.Name);
+            }
             string? dedicated = domain switch
             {
                 "scene" => ActivateSceneCommand.Name, "script" => RunScriptCommand.Name,
@@ -284,6 +297,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
                 if (_shuttingDown) return;
             }
             foreach (string command in commands) _host?.RequestButtonRefresh(command);
+            _commandAccess?.NotifyChanged();
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { _host?.Logger.Warn($"Button refresh failed ({ex.GetType().Name})."); }
@@ -333,6 +347,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
         foreach (string commandName in EntityCommandNames)
             host.RequestButtonRefresh(commandName);
         host.RequestButtonRefresh(BrightnessCommand.Name);
+        _commandAccess?.NotifyChanged();
     }
 
     // ───────── settings ─────────

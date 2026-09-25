@@ -5,6 +5,12 @@ using System.Text.Json;
 using LoupixDeck.Plugin.HomeAssistant.HomeAssistant;
 using LoupixDeck.PluginSdk;
 
+if (args.Contains("--commands"))
+{
+    await CommandSmoke.RunAsync();
+    return;
+}
+
 using var portProbe = new TcpListener(IPAddress.Loopback, 0);
 portProbe.Start();
 int port = ((IPEndPoint)portProbe.LocalEndpoint).Port;

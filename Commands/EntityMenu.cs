@@ -82,16 +82,16 @@ internal static class EntityMenu
         return areaId is not null && metadata.AreaNames.TryGetValue(areaId, out string? name) ? name : "Other";
     }
 
-    private static IReadOnlyList<MenuNode> Actions(HomeAssistantState entity, string name)
+    internal static IReadOnlyList<MenuNode> Actions(HomeAssistantState entity, string name, bool includeFolder = true)
     {
         List<MenuNode> actions = [];
         void Add(string label, string service, object? data = null) => actions.Add(new MenuNode
         {
             Name = $"{name} · {label}", CommandName = EntityServiceCommand.Name,
-            Parameters = new Dictionary<string, string> { ["ShowIcon"] = "True", ["Label"] = "auto", ["Icon"] = "auto",
-                ["StateSize"] = "11", ["LabelSize"] = "13", ["Service"] = service,
-                ["EntityId"] = entity.EntityId, ["ServiceData"] = data is null ? "none" :
-                    Uri.EscapeDataString(JsonSerializer.Serialize(data)) }
+            // Host 1.34 only preserves the first menu parameter. Carry the action there;
+            // trailing parameters remain available as explicit editor overrides.
+            Parameters = new Dictionary<string, string> { ["EntityId"] = entity.EntityId + "|" + service + "|" +
+                (data is null ? "none" : Uri.EscapeDataString(JsonSerializer.Serialize(data))) }
         });
         void Feature(int flag, string label, string service, object? data = null)
         {
@@ -115,10 +115,15 @@ internal static class EntityMenu
                 Feature(1, "Open", "open_cover"); Feature(2, "Close", "close_cover"); Feature(8, "Stop", "stop_cover");
                 Feature(4, "Position 50%", "set_cover_position", new { position = 50 }); break;
             case "climate":
+                if ((EntityCapabilities.Has(entity, 1) && EntityCapabilities.Number(entity, "temperature") is not null) ||
+                    (EntityCapabilities.Has(entity, 2) && EntityCapabilities.Number(entity, "target_temp_low") is not null &&
+                     EntityCapabilities.Number(entity, "target_temp_high") is not null))
+                {
+                    actions.Add(Leaf(entity, name, "Temperature +", IncreaseTemperatureCommand.Name));
+                    actions.Add(Leaf(entity, name, "Temperature −", DecreaseTemperatureCommand.Name));
+                }
                 Feature(256, "On", "turn_on"); Feature(128, "Off", "turn_off");
                 foreach (string mode in EntityCapabilities.Strings(entity, "hvac_modes")) Add(mode, "set_hvac_mode", new { hvac_mode = mode });
-                if (EntityCapabilities.Number(entity, "temperature") is { } temperature)
-                    Feature(1, "Set temperature", "set_temperature", new { temperature });
                 break;
             case "fan":
                 Feature(32, "On", "turn_on"); Feature(16, "Off", "turn_off");
@@ -133,6 +138,8 @@ internal static class EntityMenu
             case "automation": case "group": case "humidifier": case "input_boolean": case "siren": case "switch": Basic(); break;
         }
         if (actions.Count == 0) actions.Add(Leaf(entity, name, "Show state", ShowEntityCommand.Name));
+        if (includeFolder && actions.Count > 1)
+            actions.Insert(0, Leaf(entity, name, "Controls folder", OpenEntityControlsCommand.Name));
         return actions;
     }
 

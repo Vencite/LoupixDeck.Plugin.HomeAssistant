@@ -22,10 +22,10 @@ The token is masked in the editor and saved by LoupixDeck. Never put it in comma
 
 ## Assign buttons and dials
 
-- **Buttons:** open the action picker → **Home Assistant** → area → entity type → entity → action. Hidden, disabled and auxiliary entities are omitted. Available actions follow the entity's capabilities.
+- **Buttons:** open the action picker → **Home Assistant** → area → entity type → entity → action. Multi-action entities offer **Controls folder**: assign it to a button, then tap it on the deck to open live controls. Hidden, disabled and auxiliary entities are omitted. Available actions follow the entity's capabilities.
 - **Sensors:** choose **Show state** for a read-only button; sensor values include units.
 - **Brightness dial:** open rotary presets and choose **entity · Brightness**. Each tick changes brightness by 5%; pressing toggles the light. Only dimmable lights get presets; the indicator shows the cached brightness.
-- **Other controls:** covers offer open/close/stop and position; climate offers supported HVAC modes and target temperature; fans offer speed; media players offer supported playback/volume actions; locks and input numbers have their own actions.
+- **Other controls:** climate folders show temperature up/down buttons and a live HVAC mode subfolder. Covers, fans, media players, locks, input numbers and switches also have controls folders; each action remains assignable to its own button.
 
 Value actions start with a preset (for example 50% volume). Expand the assigned command to edit its service data as described below.
 
@@ -67,7 +67,7 @@ Use `[Uri]::EscapeDataString('{"brightness_pct":50}')` in PowerShell to encode a
 
 - Rotary support currently covers light brightness.
 - The generic **Call Service** button does not render live entity state or offer the entity display overrides. Actions selected from an entity menu do. Use a separate **Show state** button when needed.
-- The SDK provides a single rendered image, not separately editable text/icon layers. Icon selection is a text field; only the host's built-in symbols render, with a fallback for unsupported Home Assistant icons.
+- LoupixDeck currently adds its own Text/Symbol layers when an action is assigned. The SDK has no switch to suppress these layers; hide or remove them in the button editor to reveal the plugin's image. The plugin image is a single layer, so its text and icon cannot be styled as independent host layers. Only host-supported symbols render; unknown icons use a fallback.
 - Avoid commas, parentheses and semicolons in custom labels: they are command syntax in the host. Use `auto` instead of an empty field to preserve parameter positions.
 - Live updates request refreshes per command type, not per individual entity. Actual host redraw performance has not yet been measured.
 

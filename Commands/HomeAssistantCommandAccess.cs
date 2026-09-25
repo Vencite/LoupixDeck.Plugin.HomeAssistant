@@ -11,6 +11,16 @@ internal sealed class HomeAssistantCommandAccess(
     Func<string, HomeAssistantState?> entity,
     Func<string?>? status = null)
 {
+    public event Action? Changed;
+    public void NotifyChanged()
+    {
+        foreach (Action handler in Changed?.GetInvocationList() ?? [])
+        {
+            try { handler(); }
+            catch (Exception) { /* A closed host folder must not interrupt WebSocket callbacks. */ }
+        }
+    }
+
     public string? Status => status?.Invoke();
 
     public HomeAssistantClient? Client => client();
