@@ -10,6 +10,8 @@ namespace LoupixDeck.Plugin.HomeAssistant.Rendering;
 /// The button is split into three stacked, never-overlapping zones: the state indicator on top,
 /// the short state text in the middle and the friendly name at the bottom. Long names are wrapped
 /// to at most two lines and ellipsized instead of shrinking the font.
+/// An optional <see cref="Commands.ButtonDisplayOptions"/> overrides the label and the icon per
+/// button; resolving those overrides touches no network and never throws rendering off.
 /// </summary>
 internal static class EntityButtonRenderer
 {
@@ -19,7 +21,11 @@ internal static class EntityButtonRenderer
     private static readonly PluginColor Inactive = new(158, 158, 158);
     private static readonly PluginColor Missing = new(110, 110, 110);
 
-    public static bool Render(HomeAssistantState? state, string entityId, IRenderCanvas canvas)
+    public static bool Render(HomeAssistantState? state, string entityId, IRenderCanvas canvas) =>
+        Render(state, entityId, null, canvas);
+
+    public static bool Render(HomeAssistantState? state, string entityId,
+        Commands.ButtonDisplayOptions? options, IRenderCanvas canvas)
     {
         if (string.IsNullOrWhiteSpace(entityId)) return false;
         if (canvas.Width <= 0 || canvas.Height <= 0) return false;
@@ -41,10 +47,20 @@ internal static class EntityButtonRenderer
         int centerX = width / 2;
         int centerY = top + radius + stroke;
 
-        if (active) canvas.FillCircle(centerX, centerY, radius, accent);
-        else canvas.DrawCircle(centerX, centerY, radius, stroke, accent);
+        // Hiding the icon removes the whole indicator zone, so the state text and the label move
+        // up and use the freed space.
+        bool showIcon = options?.ShowIcon != false;
+        string? symbol = showIcon ? ResolveSymbol(state, options?.Icon) : null;
+        if (showIcon)
+        {
+            if (symbol is not null)
+                canvas.DrawSymbol(symbol, centerX - radius - stroke, centerY - radius - stroke,
+                    (radius + stroke) * 2, (radius + stroke) * 2, accent);
+            else if (active) canvas.FillCircle(centerX, centerY, radius, accent);
+            else canvas.DrawCircle(centerX, centerY, radius, stroke, accent);
+        }
 
-        int indicatorBottom = centerY + radius + stroke;
+        int indicatorBottom = showIcon ? centerY + radius + stroke : top;
         int boxWidth = Math.Max(0, width - side * 2);
 
         string stateText = state?.State.Trim() ?? string.Empty;
@@ -67,7 +83,9 @@ internal static class EntityButtonRenderer
         int nameHeight = height - bottom - nameTop;
         if (boxWidth <= 0 || nameHeight <= 0) return true;
 
-        string label = (state?.FriendlyName ?? entityId.Replace('_', ' ')).Trim();
+        string label = options?.Label?.Trim() is { Length: > 0 } custom
+            ? custom
+            : (state?.FriendlyName ?? entityId.Replace('_', ' ')).Trim();
         if (label.Length == 0) label = entityId;
 
         float nameFont = Math.Max(10f, size / 7f);
@@ -111,6 +129,24 @@ internal static class EntityButtonRenderer
         int length = text.Length - 1;
         while (length > 0 && canvas.MeasureText(text[..length] + Ellipsis, fontSize, bold) > maxWidth) length--;
         return length <= 0 ? Ellipsis : text[..length].TrimEnd() + Ellipsis;
+    }
+
+    /// <summary>
+    /// Resolves the symbol for the indicator zone without any network I/O: an explicit per-button
+    /// icon wins, then the entity's own <c>icon</c> attribute. Unknown values simply mean "no
+    /// symbol" and fall back to the circle indicator; the host draws a placeholder for unknown ids
+    /// only when a symbol is actually passed. Covers #11 overrides; #1 owns the HA icon semantics
+    /// (device class / domain fallbacks).
+    /// </summary>
+    private static string? ResolveSymbol(HomeAssistantState? state, string? iconOverride)
+    {
+        if (!string.IsNullOrWhiteSpace(iconOverride)) return iconOverride.Trim();
+        if (state is not null &&
+            state.Attributes.ValueKind == System.Text.Json.JsonValueKind.Object &&
+            state.Attributes.TryGetProperty("icon", out System.Text.Json.JsonElement icon) &&
+            icon.ValueKind == System.Text.Json.JsonValueKind.String)
+            return Commands.ButtonDisplayOptions.StripMdiPrefix(icon.GetString());
+        return null;
     }
 
     private static bool IsActive(string state) =>

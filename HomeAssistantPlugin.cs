@@ -22,7 +22,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
     private static readonly TimeSpan InitialRetryMaxDelay = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan TestConnectionTimeout = TimeSpan.FromSeconds(12);
     private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(5);
-    private const long EntityRefreshCoalesceMs = 500;
+    private static readonly TimeSpan EntityRefreshDebounce = TimeSpan.FromMilliseconds(150);
 
     private static readonly string[] EntityCommandNames =
     [
@@ -45,7 +45,8 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
     private HomeAssistantConnectionSettings? _desired;
     private Task _lifecycle = Task.CompletedTask;
     private long _generation;
-    private long _lastEntityRefreshTicks;
+    private long _refreshCoalesced;
+    private CancellationTokenSource? _refreshDebounce;
     private bool _shuttingDown;
 
     private IReadOnlyList<PluginSettingAction>? _settingsActions;
@@ -230,17 +231,68 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
     }
 
     /// <summary>
-    /// Pushes a refresh to the entity commands after an accepted live change. Bursts are coalesced,
-    /// because the host repaints every button of a command and a busy Home Assistant emits events far
-    /// faster than a button needs to be redrawn; the poll interval remains the safety net.
+    /// Pushes a refresh to the entity commands after an accepted live change. The first event of a
+    /// burst refreshes immediately and the rest fold into one trailing refresh, because the host
+    /// repaints every button of a command and a busy Home Assistant emits events far faster than a
+    /// button needs to be redrawn; the poll interval remains the safety net.
     /// </summary>
     private void OnEntityChanged(object? sender, HomeAssistantStateChangedEvent change)
     {
-        long now = Environment.TickCount64;
-        long last = Interlocked.Read(ref _lastEntityRefreshTicks);
-        if (now - last < EntityRefreshCoalesceMs) return;
-        if (Interlocked.CompareExchange(ref _lastEntityRefreshTicks, now, last) != last) return;
+        if (_shuttingDown) return;
+        if (Interlocked.Increment(ref _refreshCoalesced) == 1) RefreshEntityButtons();
+        ArmTrailingRefresh();
+    }
 
+    /// <summary>Refreshes after a full snapshot install, so a reconnect never leaves stale buttons
+    /// until the safety poll runs.</summary>
+    private void OnStoreSynchronized(object? sender, EventArgs args)
+    {
+        if (_shuttingDown) return;
+        Interlocked.Exchange(ref _refreshCoalesced, 0);
+        CancelTrailingRefresh(Interlocked.Exchange(ref _refreshDebounce, null));
+        RefreshEntityButtons();
+    }
+
+    private void ArmTrailingRefresh()
+    {
+        if (CancelTrailingRefresh(Interlocked.Exchange(ref _refreshDebounce, new CancellationTokenSource())))
+            return;
+        CancellationTokenSource? current = Volatile.Read(ref _refreshDebounce);
+        if (current is null) return;
+        _ = DebouncedRefreshAsync(current, current.Token);
+    }
+
+    /// <summary>Cancels and disposes a pending trailing refresh. Returns false when the new timer
+    /// must still be armed because no newer event replaced it meanwhile.</summary>
+    private bool CancelTrailingRefresh(CancellationTokenSource? previous)
+    {
+        if (previous is null) return false;
+        try { previous.Cancel(); }
+        catch (ObjectDisposedException) { }
+        finally { previous.Dispose(); }
+        return !ReferenceEquals(Volatile.Read(ref _refreshDebounce), previous);
+    }
+
+    private async Task DebouncedRefreshAsync(CancellationTokenSource owner, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(EntityRefreshDebounce, cancellationToken).ConfigureAwait(false);
+            if (Interlocked.Exchange(ref _refreshCoalesced, 0) > 1) RefreshEntityButtons();
+        }
+        catch (OperationCanceledException)
+        {
+            // Superseded by a newer event, a snapshot refresh or shutdown.
+        }
+        finally
+        {
+            if (ReferenceEquals(Interlocked.CompareExchange(ref _refreshDebounce, null, owner), owner))
+                owner.Dispose();
+        }
+    }
+
+    private void RefreshEntityButtons()
+    {
         IPluginHost? host = _host;
         if (host is null) return;
         foreach (string commandName in EntityCommandNames)
@@ -362,12 +414,15 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
 
         var store = new EntityStore(client, logger);
         store.EntityChanged += OnEntityChanged;
+        store.Synchronized += OnStoreSynchronized;
         try
         {
             await store.InitializeAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
         {
+            store.EntityChanged -= OnEntityChanged;
+            store.Synchronized -= OnStoreSynchronized;
             await store.DisposeAsync().ConfigureAwait(false);
             await client.DisposeAsync().ConfigureAwait(false);
             throw;
@@ -389,6 +444,8 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
 
         if (superseded)
         {
+            store.EntityChanged -= OnEntityChanged;
+            store.Synchronized -= OnStoreSynchronized;
             await store.DisposeAsync().ConfigureAwait(false);
             await client.DisposeAsync().ConfigureAwait(false);
             return false;
@@ -437,6 +494,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
     {
         EntityStore? store;
         HomeAssistantClient? client;
+        CancellationTokenSource? debounce;
         lock (_stateSync)
         {
             store = _store;
@@ -445,8 +503,18 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
             _client = null;
         }
 
+        debounce = Interlocked.Exchange(ref _refreshDebounce, null);
+        if (debounce is not null)
+        {
+            try { debounce.Cancel(); }
+            catch (ObjectDisposedException) { }
+            finally { debounce.Dispose(); }
+        }
+
         if (store is not null)
         {
+            store.EntityChanged -= OnEntityChanged;
+            store.Synchronized -= OnStoreSynchronized;
             try { await store.DisposeAsync().ConfigureAwait(false); }
             catch (Exception ex) { _host?.Logger.Warn($"Home Assistant entity store cleanup failed ({ex.GetType().Name})."); }
         }

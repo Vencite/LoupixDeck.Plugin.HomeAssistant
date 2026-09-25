@@ -73,8 +73,13 @@ internal static class CommandSmoke
         Check(server.Calls.Count == before, "invalid entity is not sent");
         Check(host.Recorder.Warnings.Any(warning => warning.Contains("entity_id")), "invalid entity is reported");
 
+        // Trailing display parameters do not change execution: only the entity id is forwarded.
+        await toggle.Execute(Context(host, "light.office", "False", "Custom", "mdi:lightbulb"));
+        await server.WaitForCallsAsync(before + 1, timeout.Token);
+        Check(server.Calls[before] == new ServiceCall("homeassistant", "toggle", "light.office"), "override parameters are execution-neutral");
+
         await call.Execute(Context(host, "light", "turn on"));
-        Check(server.Calls.Count == before, "invalid service is not sent");
+        Check(server.Calls.Count == before + 1, "invalid service is not sent");
 
         // Rendering reads the cached state and stays synchronous.
         var activeCanvas = new RecordingCanvas();
@@ -85,12 +90,41 @@ internal static class CommandSmoke
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "switch.kettle"), inactiveCanvas);
         Check(inactiveCanvas.FilledCircles == 0 && inactiveCanvas.OutlinedCircles == 1, "inactive entity renders an outlined indicator");
 
+        var sensorCanvas = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "sensor.temp"), sensorCanvas);
+        Check(sensorCanvas.FilledCircles == 0 && sensorCanvas.OutlinedCircles == 1, "sensor domain has no icon yet");
+
         var unknownCanvas = new RecordingCanvas();
         Check(((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.ghost"), unknownCanvas) &&
               unknownCanvas.TextDraws == 1, "unknown entity renders a placeholder");
 
         var emptyCanvas = new RecordingCanvas();
         Check(!((IDisplayImageCommand)toggle).RenderImage(Context(host), emptyCanvas), "missing parameter does not render");
+
+        // Per-button display overrides live in the trailing parameters; legacy one-parameter
+        // bindings render identically to before.
+        var labelCanvas = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office", "True", "Biuro"), labelCanvas);
+        Check(labelCanvas.Texts[1].Text.StartsWith("Biuro", StringComparison.Ordinal), "custom label wins over friendly name");
+
+        var iconCanvas = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office", "True", "", "mdi:lightbulb"), iconCanvas);
+        Check(iconCanvas.Symbols.Contains("lightbulb"), "custom mdi icon is drawn");
+        Check(iconCanvas.FilledCircles == 0 && iconCanvas.OutlinedCircles == 0, "icon replaces the circle indicator");
+
+        var entityIconCanvas = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.desk"), entityIconCanvas);
+        Check(entityIconCanvas.Symbols.Contains("desk-lamp"), "entity icon attribute is automatic");
+
+        var hiddenCanvas = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office", "False"), hiddenCanvas);
+        Check(hiddenCanvas.Symbols.Count == 0 && hiddenCanvas.FilledCircles == 0 && hiddenCanvas.OutlinedCircles == 0,
+            "hidden icon removes the indicator zone");
+        Check(hiddenCanvas.Texts[0].Top < activeCanvas.Texts[0].Top, "hidden icon moves text up");
+
+        var shorthandCanvas = new RecordingCanvas();
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office", "mdi:ceiling-light"), shorthandCanvas);
+        Check(shorthandCanvas.Symbols.Contains("ceiling-light"), "lone icon value is read as the icon");
 
         // Layout zones never overlap: indicator, state text and the friendly name each own
         // a disjoint vertical band, even for a long friendly name.
@@ -113,6 +147,20 @@ internal static class CommandSmoke
                      "HomeAssistant.ActivateScene", "HomeAssistant.RunScript", "HomeAssistant.PressButton"
                  })
             Check(host.Refreshes.Contains(name), $"entity change refreshes {name}");
+
+        // The first event refreshes immediately instead of waiting for a coalescing window.
+        Check(host.Refreshes.Count >= 6, "first event refreshes without delay");
+
+        // A burst folds into a bounded number of refreshes: the first event refreshes
+        // immediately and the rest fold into one trailing pass — never one per event. Six events
+        // would mean 36 queue entries without coalescing; three back-to-back events all land
+        // inside one debounce window, so the burst costs a single pass here.
+        await Task.Delay(400, timeout.Token);
+        int burstBase = host.Refreshes.Count;
+        await server.PublishBurstAsync(timeout.Token);
+        await Task.Delay(1000, timeout.Token);
+        int burstRefreshes = host.Refreshes.Count - burstBase;
+        Check(burstRefreshes == 6, $"burst coalesces into one pass (got {burstRefreshes})");
 
         var changedCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)toggle).RenderImage(Context(host, "light.office"), changedCanvas);
@@ -158,7 +206,17 @@ internal static class CommandSmoke
         }
 
         /// <summary>Pushes a live <c>state_changed</c> event to the subscribed plugin.</summary>
-        public async Task PublishStateChangeAsync(CancellationToken token)
+        public async Task PublishStateChangeAsync(CancellationToken token) =>
+            await PublishChangeAsync("2024-01-02T00:00:00+00:00", "off", token);
+
+        /// <summary>Pushes several events back to back to exercise the trailing refresh coalescing.</summary>
+        public async Task PublishBurstAsync(CancellationToken token)
+        {
+            for (int i = 1; i <= 3; i++)
+                await PublishChangeAsync($"2024-01-02T00:00:0{i}+00:00", i % 2 == 0 ? "on" : "off", token);
+        }
+
+        private async Task PublishChangeAsync(string updated, string value, CancellationToken token)
         {
             int id = await _subscription.Task.WaitAsync(token);
             WebSocket socket = _socket ?? throw new InvalidOperationException("No subscribed socket.");
@@ -168,12 +226,12 @@ internal static class CommandSmoke
                 @event = new
                 {
                     event_type = "state_changed",
-                    time_fired = "2024-01-02T00:00:00+00:00",
+                    time_fired = updated,
                     data = new
                     {
                         entity_id = "light.office",
                         old_state = State("light.office", "on", "Office Light"),
-                        new_state = State("light.office", "off", "Office Light", "2024-01-02T00:00:00+00:00")
+                        new_state = State("light.office", value, "Office Light", null, updated)
                     }
                 }
             });
@@ -255,6 +313,7 @@ internal static class CommandSmoke
         private static object[] States() =>
         [
             State("light.office", "on", "Office Light"),
+            State("light.desk", "on", "Desk", "mdi:desk-lamp"),
             State("light.long_name", "on", "Bardzo Długa Nazwa Encji Testowej Do Sprawdzenia"),
             State("switch.kettle", "off", "Kettle"),
             State("scene.movie", "on", "Movie Night"),
@@ -263,14 +322,22 @@ internal static class CommandSmoke
             State("sensor.temp", "21", "Temperature")
         ];
 
-        private static object State(string entityId, string value, string friendlyName,
-            string updated = "2024-01-01T00:00:00+00:00") => new
+        private static object State(string entityId, string value, string friendlyName) =>
+            State(entityId, value, friendlyName, null, "2024-01-01T00:00:00+00:00");
+
+        private static object State(string entityId, string value, string friendlyName, string? icon,
+            string updated = "2024-01-01T00:00:00+00:00")
         {
-            entity_id = entityId, state = value,
-            attributes = new { friendly_name = friendlyName },
-            last_changed = updated,
-            last_updated = updated
-        };
+            var attributes = new Dictionary<string, object> { ["friendly_name"] = friendlyName };
+            if (icon is not null) attributes["icon"] = icon;
+            return new
+            {
+                entity_id = entityId, state = value,
+                attributes,
+                last_changed = updated,
+                last_updated = updated
+            };
+        }
 
         private async Task SendAsync(WebSocket socket, object message) =>
             await socket.SendAsync(JsonSerializer.SerializeToUtf8Bytes(message), WebSocketMessageType.Text, true,
@@ -357,6 +424,7 @@ internal static class CommandSmoke
         public int FilledCircles { get; private set; }
         public int OutlinedCircles { get; private set; }
         public List<TextBox> Texts { get; } = [];
+        public List<string> Symbols { get; } = [];
         public int IndicatorTop { get; private set; }
         public int IndicatorBottom { get; private set; }
         public bool HasIndicator { get; private set; }
@@ -400,7 +468,8 @@ internal static class CommandSmoke
         public void DrawLine(int x1, int y1, int x2, int y2, int strokeWidth, PluginColor color) { }
         public float MeasureText(string text, float fontSize, bool bold = false, bool italic = false) =>
             text.Sum(character => character == ' ' ? fontSize * 0.3f : fontSize * 0.6f);
-        public void DrawSymbol(string symbolId, int x, int y, int width, int height, PluginColor tint) { }
+        public void DrawSymbol(string symbolId, int x, int y, int width, int height, PluginColor tint) =>
+            Symbols.Add(symbolId);
         public void DrawSymbol(string symbolId, int x, int y, int width, int height, SymbolStyle style) { }
         public void DrawImage(byte[] imageBytes, int x, int y, int width, int height) { }
         public void DrawImage(byte[] imageBytes, int x, int y, int width, int height, byte opacity, PluginColor tint = default) { }

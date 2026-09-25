@@ -423,7 +423,15 @@ public sealed class HomeAssistantClient(IPluginLogger logger) : IAsyncDisposable
                 switch (ReadType(root))
                 {
                     case "result": HandleResult(root); break;
-                    case "event": HandleEvent(root); break;
+                    case "event":
+                        try { HandleEvent(root); }
+                        catch (InvalidDataException ex)
+                        {
+                            // A single malformed event must not kill the receive loop; the poll
+                            // remains the safety net for whatever this event would have carried.
+                            logger.Warn($"Home Assistant sent an invalid event ({ex.Message}).");
+                        }
+                        break;
                     case "pong": break;
                     default: logger.Warn("Home Assistant sent an unrecognized message type."); break;
                 }

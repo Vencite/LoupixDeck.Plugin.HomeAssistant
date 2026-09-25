@@ -5,10 +5,11 @@ using LoupixDeck.PluginSdk;
 namespace LoupixDeck.Plugin.HomeAssistant.Commands;
 
 /// <summary>
-/// Base for the per-entity commands. They are thin adapters: the entity id is the only parameter,
+/// Base for the per-entity commands. They are thin adapters: the entity id is the first parameter,
 /// execution forwards to a service call and rendering reads the cached state of that same entity.
-/// All of them share the stable <c>EntityId</c> parameter, so no command type or identifier is
-/// generated per entity.
+/// All of them share the stable parameters, so no command type or identifier is generated per
+/// entity. Extra trailing parameters (<c>ShowIcon</c>, <c>Label</c>, <c>Icon</c>) are optional
+/// per-button display overrides; bindings that only contain <c>EntityId</c> keep working unchanged.
 /// </summary>
 internal abstract class EntityCommand(HomeAssistantCommandAccess access) : IDisplayImageCommand
 {
@@ -21,9 +22,9 @@ internal abstract class EntityCommand(HomeAssistantCommandAccess access) : IDisp
 
     public async Task Execute(CommandContext ctx)
     {
-        if (ctx.Parameters.Length != 1 || !HomeAssistantIdentifiers.IsEntityId(ctx.Parameters[0]))
+        if (ctx.Parameters.Length < 1 || !HomeAssistantIdentifiers.IsEntityId(ctx.Parameters[0]))
         {
-            ctx.Host.Logger.Warn($"{Descriptor.CommandName} expects a single entity_id parameter such as light.office.");
+            ctx.Host.Logger.Warn($"{Descriptor.CommandName} expects an entity_id as its first parameter such as light.office.");
             return;
         }
 
@@ -49,8 +50,9 @@ internal abstract class EntityCommand(HomeAssistantCommandAccess access) : IDisp
 
     public bool RenderImage(CommandContext ctx, IRenderCanvas canvas)
     {
-        string entityId = ctx.Parameters.Length == 1 ? ctx.Parameters[0] : string.Empty;
-        return EntityButtonRenderer.Render(access.FindEntity(entityId), entityId, canvas);
+        string entityId = ctx.Parameters.Length >= 1 ? ctx.Parameters[0] : string.Empty;
+        return EntityButtonRenderer.Render(access.FindEntity(entityId), entityId,
+            ButtonDisplayOptions.FromParameters(ctx.Parameters), canvas);
     }
 
     protected static CommandDescriptor Describe(string commandName, string displayName, string description) => new()
@@ -59,8 +61,17 @@ internal abstract class EntityCommand(HomeAssistantCommandAccess access) : IDisp
         DisplayName = displayName,
         Group = "Home Assistant",
         Description = description,
-        ParameterTemplate = "({EntityId})",
-        Parameters = [new CommandParameter("EntityId", typeof(string))],
+        ParameterTemplate = "({EntityId},{ShowIcon},{Label},{Icon})",
+        Parameters =
+        [
+            new CommandParameter("EntityId", typeof(string)),
+            new CommandParameter("ShowIcon", typeof(bool)) { DefaultValue = "True" },
+            // A single space, not an empty default: the host pre-fills menu-built commands with
+            // DefaultValue when set, but falls back to a type placeholder (literally "string")
+            // when it is null. The space trims to empty when the command string is parsed back.
+            new CommandParameter("Label", typeof(string)) { DefaultValue = " " },
+            new CommandParameter("Icon", typeof(string)) { DefaultValue = " " }
+        ],
         HiddenFromMenu = true
     };
 }

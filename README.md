@@ -34,6 +34,8 @@ The implementation currently provides:
 
 All entity commands take one shared `entity_id` parameter, so a single command serves every entity of its kind instead of one command per entity.
 
+Each entity command also accepts optional per-button display overrides stored as trailing parameters: a `ShowIcon` flag, a custom `Label` and a custom `Icon` (a host symbol id, optionally with an `mdi:` prefix). Bindings that only contain `entity_id` keep working unchanged; leaving an override empty falls back to the automatic Home Assistant presentation (friendly name, entity icon attribute, circle indicator).
+
 ## Installation
 
 There is no usable Home Assistant plugin release yet.
