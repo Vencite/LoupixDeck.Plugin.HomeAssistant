@@ -260,12 +260,18 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
 
     private async Task RefreshFromHomeAssistantAsync()
     {
-        EntityStore? store;
-        lock (_stateSync) store = _store;
-        if (store is null || GetConnectionStatus() is not null) return;
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-        timeout.CancelAfter(TimeSpan.FromSeconds(10));
-        try { await store.RefreshAsync(timeout.Token).ConfigureAwait(false); }
+        try
+        {
+            // LoupixDeck restores the pressed button's cached bitmap after its 100 ms touch flash.
+            // Allow for the device draw as well before a refresh can replace/dispose that bitmap.
+            await Task.Delay(500, _lifetime.Token).ConfigureAwait(false);
+            EntityStore? store;
+            lock (_stateSync) store = _store;
+            if (store is null || GetConnectionStatus() is not null) return;
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+            timeout.CancelAfter(TimeSpan.FromSeconds(10));
+            await store.RefreshAsync(timeout.Token).ConfigureAwait(false);
+        }
         catch (OperationCanceledException) when (!_lifetime.IsCancellationRequested)
         { _host?.Logger.Warn("Home Assistant refresh timed out."); }
         catch (OperationCanceledException) { }
