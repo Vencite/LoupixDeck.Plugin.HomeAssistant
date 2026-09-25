@@ -87,6 +87,34 @@ internal static class PluginLifecycleSmoke
 
         plugin.Shutdown(); // Must be safe to repeat.
 
+        // Shutdown while the owned lifecycle is still connecting: it must stop the lifecycle first,
+        // so the attempt can neither publish a runtime nor keep running behind the shutdown.
+        var racingLogger = new CapturingLogger();
+        var racingHost = new FakeHost(racingLogger);
+        racingHost.Settings.Set("url", url);
+        racingHost.Settings.Set("accessToken", "slow-shutdown");
+        var racingPlugin = new HomeAssistantPlugin();
+        racingPlugin.Initialize(racingHost);
+        await UntilAsync(() => server.ConnectionCount > afterShutdown, timeout.Token);
+
+        racingPlugin.Shutdown();
+        Check(racingLogger.Count(ShutdownTimedOut) == 0, "shutdown awaited the lifecycle instead of timing out");
+        Check(!server.IsActive("slow-shutdown"), "shutdown prevented a late runtime publish");
+
+        // Outlive the delayed authentication: nothing may be published or retried afterwards.
+        await Task.Delay(TimeSpan.FromMilliseconds(2500), timeout.Token);
+        Check(!server.IsActive("slow-shutdown"), "stopped lifecycle did not become active later");
+        Check(racingLogger.Count("Home Assistant connection lifecycle failed.") == 0,
+            "shutdown did not fault the lifecycle");
+
+        // A save after shutdown must not start a session again.
+        int racingConnections = server.ConnectionCount;
+        racingHost.Settings.Set("accessToken", "after-shutdown");
+        racingPlugin.OnSettingsSaved();
+        await Task.Delay(TimeSpan.FromMilliseconds(500), timeout.Token);
+        Check(server.ConnectionCount == racingConnections, "no session starts after shutdown");
+        racingPlugin.Shutdown(); // Repeated shutdown is safe.
+
         // An unreachable endpoint keeps the initial connection in its retry loop, which both a
         // settings save and a shutdown must cancel immediately.
         int unreachablePort = FreePort();
@@ -104,10 +132,12 @@ internal static class PluginLifecycleSmoke
         retryPlugin.Shutdown();
         stopwatch.Stop();
         Check(stopwatch.Elapsed < TimeSpan.FromSeconds(4), "shutdown does not wait out the retry timeout");
+        Check(retryLogger.Count(ShutdownTimedOut) == 0, "cooperative cancellation is not a timeout");
         Check(retryLogger.Count("Home Assistant runtime stopped.") == 1, "retry scenario stopped cleanly");
         int retryFailures = retryLogger.Count(RetryFailed);
         await Task.Delay(TimeSpan.FromSeconds(3), timeout.Token);
         Check(retryLogger.Count(RetryFailed) == retryFailures, "shutdown stopped the retry loop");
+        retryPlugin.Shutdown(); // Repeated shutdown is safe.
 
         var switchedLogger = new CapturingLogger();
         var switchedHost = new FakeHost(switchedLogger);
@@ -126,10 +156,63 @@ internal static class PluginLifecycleSmoke
         Check(switchedLogger.Count(RetryFailed) == switchedFailures, "settings save stopped the retry loop");
         switchedPlugin.Shutdown();
 
+        // A lifecycle that cannot stop within the budget must not lead to a concurrent cleanup or to
+        // the disposal of cancellation sources it is still using.
+        var blockingLogger = new BlockingRetryLogger();
+        var blockingHost = new FakeHost(blockingLogger);
+        blockingHost.Settings.Set("url", $"http://127.0.0.1:{FreePort()}");
+        blockingHost.Settings.Set("accessToken", "blocked");
+        var blockingPlugin = new HomeAssistantPlugin();
+        blockingPlugin.Initialize(blockingHost);
+        blockingLogger.WaitUntilBlocked();
+
+        var blockingWatch = System.Diagnostics.Stopwatch.StartNew();
+        blockingPlugin.Shutdown();
+        blockingWatch.Stop();
+        Check(blockingWatch.Elapsed >= TimeSpan.FromSeconds(4), "slow lifecycle consumed the shutdown budget");
+        Check(blockingWatch.Elapsed < TimeSpan.FromSeconds(10), "shutdown stayed bounded");
+        Check(blockingLogger.Count(ShutdownTimedOut) == 1, "slow lifecycle reported the timeout");
+        Check(blockingLogger.Count("Home Assistant runtime stopped.") == 0,
+            "timed-out shutdown did not clean up concurrently");
+
+        // Let the stuck lifecycle continue. It may not touch anything the shutdown disposed.
+        blockingLogger.Release();
+        await blockingLogger.WaitForCountAsync("Home Assistant disconnected.", 1, timeout.Token);
+        Check(blockingLogger.Count("Home Assistant connection lifecycle failed.") == 0,
+            "running lifecycle did not use a disposed resource");
+        blockingPlugin.Shutdown(); // Repeated shutdown is safe.
+
+        // An owned lifecycle that ends as canceled or faulted must not surface to the host.
+        await ShutdownAfterInvalidSettingsAsync(cancel: true, timeout.Token);
+        await ShutdownAfterInvalidSettingsAsync(cancel: false, timeout.Token);
+
         Console.WriteLine("HomeAssistantPlugin lifecycle smoke check passed.");
     }
 
+    /// <summary>
+    /// Drives the owned lifecycle into a canceled (or faulted) state by making the host logger throw
+    /// while the plugin reports a non-transient connection failure, then shuts down.
+    /// </summary>
+    private static async Task ShutdownAfterInvalidSettingsAsync(bool cancel, CancellationToken cancellationToken)
+    {
+        var logger = new ThrowingLogger(cancel);
+        var host = new FakeHost(logger);
+        host.Settings.Set("url", "not-a-url");
+        host.Settings.Set("accessToken", "token");
+        var plugin = new HomeAssistantPlugin();
+        plugin.Initialize(host);
+
+        await UntilAsync(() => logger.Errors > 0, cancellationToken);
+
+        plugin.Shutdown(); // Must not throw, in particular no AggregateException.
+        plugin.Shutdown();
+
+        string kind = cancel ? "canceled" : "faulted";
+        Check(logger.Errors == 1, $"{kind} lifecycle ended once");
+    }
+
     private const string RetryFailed = "Initial connection to Home Assistant failed";
+    private const string ShutdownTimedOut = "Home Assistant connection lifecycle did not stop within the shutdown timeout";
 
     private static int FreePort()
     {
@@ -182,9 +265,10 @@ internal static class PluginLifecycleSmoke
                 using (JsonDocument auth = await ReadAsync(socket))
                     token = auth.RootElement.GetProperty("access_token").GetString() ?? "";
 
-                if (token == "slow-a")
+                if (token.StartsWith("slow-", StringComparison.Ordinal))
                 {
-                    // Deliberately slow: a superseded attempt is cancelled while this is pending.
+                    // Deliberately slow: a superseded or shut-down attempt is cancelled while this
+                    // is pending, so it must never reach the request phase.
                     await Task.Delay(TimeSpan.FromSeconds(2), CancellationToken.None);
                     await SendAsync(socket, new { type = "auth_ok" });
                 }
@@ -197,7 +281,7 @@ internal static class PluginLifecycleSmoke
                     await SendAsync(socket, new { type = "auth_ok" });
                 }
 
-                if (token is "slow-a" or "bad-token")
+                if (token == "bad-token" || token.StartsWith("slow-", StringComparison.Ordinal))
                 {
                     using JsonDocument _ = await ReadAsync(socket);
                     return;
@@ -319,13 +403,13 @@ internal static class PluginLifecycleSmoke
     }
 
     /// <summary>Keeps the plugin's lifecycle messages so the retry loop can be observed.</summary>
-    private sealed class CapturingLogger : IPluginLogger
+    private class CapturingLogger : IPluginLogger
     {
         private readonly ConcurrentQueue<string> _messages = new();
 
-        public void Info(string message) => _messages.Enqueue(message);
-        public void Warn(string message) => _messages.Enqueue(message);
-        public void Error(string message, Exception? exception = null) => _messages.Enqueue(message);
+        public virtual void Info(string message) => _messages.Enqueue(message);
+        public virtual void Warn(string message) => _messages.Enqueue(message);
+        public virtual void Error(string message, Exception? exception = null) => _messages.Enqueue(message);
 
         public int Count(string prefix) =>
             _messages.Count(message => message.StartsWith(prefix, StringComparison.Ordinal));
@@ -333,6 +417,51 @@ internal static class PluginLifecycleSmoke
         public async Task WaitForCountAsync(string prefix, int expected, CancellationToken cancellationToken)
         {
             while (Count(prefix) < expected) await Task.Delay(20, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Blocks inside the first retry warning, which is an uncancellable call from the lifecycle's
+    /// point of view: the shutdown budget has to expire while the lifecycle is still running.
+    /// </summary>
+    private sealed class BlockingRetryLogger : CapturingLogger
+    {
+        private readonly ManualResetEventSlim _entered = new();
+        private readonly ManualResetEventSlim _release = new();
+        private int _blocked;
+
+        public override void Warn(string message)
+        {
+            base.Warn(message);
+            if (!message.StartsWith(RetryFailed, StringComparison.Ordinal)) return;
+            if (Interlocked.Exchange(ref _blocked, 1) != 0) return;
+            _entered.Set();
+            _release.Wait(TimeSpan.FromSeconds(60));
+        }
+
+        public void WaitUntilBlocked() => Check(_entered.Wait(TimeSpan.FromSeconds(10)), "retry warning blocked");
+
+        public void Release() => _release.Set();
+    }
+
+    /// <summary>
+    /// A host logger that fails, driving the owned lifecycle into a canceled (or faulted) state so
+    /// the shutdown has to cope with an owned task that did not complete successfully.
+    /// </summary>
+    private sealed class ThrowingLogger(bool cancel) : IPluginLogger
+    {
+        private int _errors;
+
+        public int Errors => Volatile.Read(ref _errors);
+
+        public void Info(string message) { }
+        public void Warn(string message) { }
+
+        public void Error(string message, Exception? exception = null)
+        {
+            Interlocked.Increment(ref _errors);
+            if (cancel) throw new OperationCanceledException();
+            throw new InvalidOperationException("Synthetic host logger failure.");
         }
     }
 

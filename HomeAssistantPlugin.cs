@@ -91,10 +91,29 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage
     }
 
     /// <summary>
-    /// The SDK contract is synchronous, so the owned work is cancelled cooperatively first and only
-    /// awaited at this final lifecycle boundary.
+    /// The SDK contract is synchronous. All owned work is cancelled cooperatively and then awaited
+    /// by <see cref="ShutdownCoreAsync"/>, so the host never gets an exception out of shutting a
+    /// lifecycle down — neither a cancellation nor an <see cref="AggregateException"/>.
     /// </summary>
     public override void Shutdown()
+    {
+        try
+        {
+            ShutdownCoreAsync().GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            // Last-resort guard: a failing shutdown must not escape into the host.
+            _host?.Logger.Warn($"Home Assistant shutdown failed ({ex.GetType().Name}).");
+        }
+    }
+
+    /// <summary>
+    /// Owns the shutdown order: stop accepting sessions, cancel the lifetime and session, await the
+    /// owned lifecycle, stop the published runtime and only then dispose the cancellation sources.
+    /// The wait is bounded, and nothing is disposed while the lifecycle may still be running.
+    /// </summary>
+    private async Task ShutdownCoreAsync()
     {
         CancellationTokenSource? session;
         Task lifecycle;
@@ -102,17 +121,38 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage
         {
             if (_shuttingDown) return;
             _shuttingDown = true;
-            _session?.Cancel();
             session = _session;
             lifecycle = _lifecycle;
         }
+
+        // Cancelled outside the lock: cancellation callbacks may run synchronously.
         _lifetime.Cancel();
+        session?.Cancel();
 
-        if (!lifecycle.Wait(ShutdownTimeout))
-            _host?.Logger.Warn("Home Assistant connection lifecycle did not stop within the shutdown timeout.");
+        using var budget = new CancellationTokenSource(ShutdownTimeout);
+        try
+        {
+            await lifecycle.WaitAsync(budget.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected while shutting down, unless our own budget is what elapsed.
+            if (budget.IsCancellationRequested)
+            {
+                // The lifecycle still owns the cancellation sources and the runtime, so it is left
+                // untouched: no concurrent cleanup, no disposal of resources still in use, and a
+                // late publish stays rejected because the plugin is already marked as shutting down.
+                _host?.Logger.Warn("Home Assistant connection lifecycle did not stop within the shutdown timeout.");
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            // An owned lifecycle that faulted while shutting down is still a stopped lifecycle.
+            _host?.Logger.Warn($"Home Assistant connection lifecycle ended with an error ({ex.GetType().Name}).");
+        }
 
-        if (!StopRuntimeAsync().Wait(ShutdownTimeout))
-            _host?.Logger.Warn("Home Assistant runtime cleanup did not finish within the shutdown timeout.");
+        await StopRuntimeAsync().ConfigureAwait(false);
 
         session?.Dispose();
         _lifetime.Dispose();
@@ -259,18 +299,27 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage
             throw;
         }
 
-        if (IsSuperseded(generation, cancellationToken))
+        // The supersede check and the publish share one lock acquisition, so a shutdown that starts
+        // in between cannot leave a runtime behind: either the runtime is published first and the
+        // shutdown finds it, or the shutdown wins and the runtime is discarded here.
+        bool superseded;
+        lock (_stateSync)
+        {
+            superseded = IsSupersededLocked(generation, cancellationToken);
+            if (!superseded)
+            {
+                _client = client;
+                _store = store;
+            }
+        }
+
+        if (superseded)
         {
             await store.DisposeAsync().ConfigureAwait(false);
             await client.DisposeAsync().ConfigureAwait(false);
             return false;
         }
 
-        lock (_stateSync)
-        {
-            _client = client;
-            _store = store;
-        }
         logger.Info($"Entity store initialized with {store.Count} entities.");
         return true;
     }
@@ -337,9 +386,12 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage
 
     private bool IsSuperseded(long generation, CancellationToken cancellationToken)
     {
-        lock (_stateSync)
-            return _shuttingDown || generation != _generation || cancellationToken.IsCancellationRequested;
+        lock (_stateSync) return IsSupersededLocked(generation, cancellationToken);
     }
+
+    // Caller holds _stateSync.
+    private bool IsSupersededLocked(long generation, CancellationToken cancellationToken) =>
+        _shuttingDown || generation != _generation || cancellationToken.IsCancellationRequested;
 
     private static bool IsTransient(Exception exception) =>
         exception is TimeoutException or IOException or SocketException or WebSocketException or HttpRequestException;
