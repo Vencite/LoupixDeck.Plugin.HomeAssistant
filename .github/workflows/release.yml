@@ -12,4 +12,5 @@ jobs:
   release:
     uses: RadiatorTwo/LoupixDeck.PluginSdk/.github/workflows/plugin-release.yml@master
     with:
+      project: LoupixDeck.Plugin.HomeAssistant.csproj
       build-sdk: false
