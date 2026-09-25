@@ -9,7 +9,7 @@ Direct Home Assistant integration for [LoupixDeck](https://github.com/RadiatorTw
 
 ## Status
 
-This plugin is under active development. The current repository contains a buildable plugin that can be configured with a Home Assistant URL and access token, keeps a background connection to Home Assistant, and synchronizes entity state locally. Controllable commands and button feedback are not available yet.
+This plugin is under active development. The current repository contains a buildable plugin that can be configured with a Home Assistant URL and access token, keeps a background connection to Home Assistant, synchronizes entity state locally, and exposes control commands with dynamic entity menus and touch-button state feedback. It has not been released yet, and the commands and button rendering have not been validated in a running LoupixDeck host.
 
 ## Configuration
 
@@ -22,16 +22,17 @@ Save the settings; the plugin then connects and keeps the connection alive in th
 
 The token field is masked in the settings UI, and both values are stored by LoupixDeck's standard per-plugin settings store. The token is never logged.
 
-## Planned features
+## Features
 
-The planned first usable version aims to provide:
+The implementation currently provides:
 
-- Live entity state and touch-button feedback
-- Toggle, turn-on, and turn-off actions
+- Live entity state synchronization and touch-button feedback
+- Toggle, turn-on, and turn-off actions for a single entity
 - Actions for scripts, scenes, and Home Assistant buttons
-- Generic service calls and dynamic LoupixDeck menus
+- A generic service-call action for anything the dedicated commands do not cover
+- Dynamic LoupixDeck menus that group entities by domain
 
-These features are planned, not currently available.
+All entity commands take one shared `entity_id` parameter, so a single command serves every entity of its kind instead of one command per entity.
 
 ## Installation
 
@@ -56,7 +57,7 @@ dotnet restore
 dotnet build -c Release
 ```
 
-This builds the plugin class library. It contains the connection and entity-state synchronization described above; commands are not implemented yet.
+This builds the plugin class library, containing the connection, entity-state synchronization and the command layer described above.
 
 ## Home Assistant authentication
 
