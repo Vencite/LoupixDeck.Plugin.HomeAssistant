@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text.Json;
 using LoupixDeck.Plugin.HomeAssistant;
+using LoupixDeck.Plugin.HomeAssistant.Rendering;
 using LoupixDeck.PluginSdk;
 
 /// <summary>
@@ -224,6 +225,11 @@ internal static class CommandSmoke
             "connection tile shows live status and last entity update time");
         Check(plugin.Metadata.Icon is { Length: > 8 } logo && logo[0] == 0x89 && logo[1] == (byte)'P',
             "plugin metadata contains the Home Assistant logo");
+        byte[]? mdi = MdiIconCache.Rasterize("<path d=\"M2 2h20v20H2z\"/>");
+        Check(mdi is { Length: > 8 } && mdi[0] == 0x89 && mdi[1] == (byte)'P',
+            "MDI path becomes a cached PNG image");
+        await connection.Execute(Context(host));
+        Check(server.StateRequests == 2, "pressing connection status fetches fresh entity states");
 
         // Rendering reads the cached state and stays synchronous.
         var activeCanvas = new RecordingCanvas();
@@ -242,6 +248,10 @@ internal static class CommandSmoke
               unknownStateCanvas.Texts[0].Color != unavailableCanvas.Texts[0].Color,
             "unavailable, unknown and off have distinct visual treatments");
         CheckLayout(unavailableCanvas, "unavailable entity layout");
+        var narrowUnavailable = new RecordingCanvas { Width = 60, Height = 180 };
+        ((IDisplayImageCommand)toggle).RenderImage(Context(host, "switch.unavailable"), narrowUnavailable);
+        Check(narrowUnavailable.Texts.Any(text => text.Text == "N/A"),
+            "narrow buttons abbreviate unavailable without wrapping");
         CheckLayout(unknownStateCanvas, "unknown entity layout");
 
         var sensorCanvas = new RecordingCanvas();
@@ -386,7 +396,9 @@ internal static class CommandSmoke
     {
         public JsonElement LastRequest { get; private set; }
         private int _registryRequests;
+        private int _stateRequests;
         public int RegistryRequests => Volatile.Read(ref _registryRequests);
+        public int StateRequests => Volatile.Read(ref _stateRequests);
         private readonly List<ServiceCall> _calls = [];
         private readonly TaskCompletionSource<int> _subscription = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private WebSocket? _socket;
@@ -473,6 +485,7 @@ internal static class CommandSmoke
                             await SendAsync(socket, new { id, type = "result", success = true, result = (object?)null });
                             break;
                         case "get_states":
+                            Interlocked.Increment(ref _stateRequests);
                             await SendAsync(socket, new { id, type = "result", success = true, result = States() });
                             break;
                         case "config/entity_registry/list":

@@ -67,7 +67,7 @@ internal abstract class EntityCommand(HomeAssistantCommandAccess access) : IDisp
         DisplayName = displayName,
         Group = "Home Assistant",
         Description = description,
-        ParameterTemplate = "({EntityId},{ShowIcon},{Label},{Icon},{StateSize},{LabelSize}" +
+        ParameterTemplate = "({EntityId},{ShowIcon},{Label},{Icon},{StateSize (8-18)},{LabelSize (8-18)}" +
             string.Concat(extra.Select(parameter => ",{" + parameter.Name + "}")) + ")",
         Parameters =
         [
@@ -77,8 +77,8 @@ internal abstract class EntityCommand(HomeAssistantCommandAccess access) : IDisp
             // the editor; its command parser discards empty pieces.
             new CommandParameter("Label", typeof(string)) { DefaultValue = "auto" },
             new CommandParameter("Icon", typeof(string)) { DefaultValue = "auto" },
-            new CommandParameter("StateSize", typeof(string)) { DefaultValue = "11" },
-            new CommandParameter("LabelSize", typeof(string)) { DefaultValue = "13" },
+            new CommandParameter("StateSize (8-18)", typeof(string)) { DefaultValue = "11" },
+            new CommandParameter("LabelSize (8-18)", typeof(string)) { DefaultValue = "13" },
             ..extra
         ],
         HiddenFromMenu = true

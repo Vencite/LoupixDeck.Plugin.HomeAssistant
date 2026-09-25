@@ -92,9 +92,15 @@ internal static class EntityButtonRenderer
         // up and use the freed space.
         bool showIcon = options?.ShowIcon != false && radius >= 3;
         string? symbol = showIcon ? ResolveSymbol(state, options?.Icon) : null;
+        string? selectedIcon = showIcon ? SelectedIcon(state, options?.Icon) : null;
+        byte[]? mdiImage = selectedIcon is not null && !HostSymbols.Contains(selectedIcon)
+            ? MdiIconCache.Get(selectedIcon) : null;
         if (showIcon)
         {
-            if (symbol is not null)
+            if (mdiImage is not null)
+                canvas.DrawImage(mdiImage, centerX - radius - stroke, centerY - radius - stroke,
+                    (radius + stroke) * 2, (radius + stroke) * 2, 255, accent);
+            else if (symbol is not null)
                 canvas.DrawSymbol(symbol, centerX - radius - stroke, centerY - radius - stroke,
                     (radius + stroke) * 2, (radius + stroke) * 2, accent);
             else if (active) canvas.FillCircle(centerX, centerY, radius, accent);
@@ -104,6 +110,7 @@ internal static class EntityButtonRenderer
         int indicatorBottom = showIcon ? centerY + radius + stroke : top;
 
         string stateText = connectionStatus ?? state?.State.Trim() ?? "No state";
+        if (boxWidth < 100 && stateText == "unavailable") stateText = "N/A";
         if (connectionStatus is null && state?.Domain == "climate")
         {
             double? target = Commands.EntityCapabilities.Number(state, "temperature");
@@ -227,6 +234,19 @@ internal static class EntityButtonRenderer
             "button" => "power",
             _ => null
         };
+    }
+
+    private static string? SelectedIcon(HomeAssistantState? state, string? iconOverride)
+    {
+        string? selected = Commands.ButtonDisplayOptions.StripMdiPrefix(iconOverride);
+        if (selected is not null) return selected;
+        selected = Commands.ButtonDisplayOptions.StripMdiPrefix(state?.RegistryIcon);
+        if (selected is not null) return selected;
+        if (state?.Attributes.ValueKind == System.Text.Json.JsonValueKind.Object &&
+            state.Attributes.TryGetProperty("icon", out System.Text.Json.JsonElement icon) &&
+            icon.ValueKind == System.Text.Json.JsonValueKind.String)
+            return Commands.ButtonDisplayOptions.StripMdiPrefix(icon.GetString());
+        return null;
     }
 
     private static string? SupportedSymbol(string? icon)

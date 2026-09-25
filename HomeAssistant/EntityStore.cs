@@ -69,6 +69,68 @@ public sealed class EntityStore(HomeAssistantClient client, IPluginLogger logger
         if (synchronized) Notify(Synchronized);
     }
 
+    public async Task RefreshAsync(CancellationToken cancellationToken = default)
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _stop.Token);
+        await _synchronizationGate.WaitAsync(linked.Token).ConfigureAwait(false);
+        long generation;
+        bool synchronized = false;
+        try
+        {
+            lock (_sync)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                if (!_initialized) return;
+                generation = _generation;
+                _buffer.Clear();
+                _buffering = true;
+            }
+            try
+            {
+                IReadOnlyList<HomeAssistantState> snapshot = await client.GetStatesAsync(linked.Token).ConfigureAwait(false);
+                HomeAssistantMenuMetadata metadata;
+                try { metadata = await client.GetMenuMetadataAsync(linked.Token).ConfigureAwait(false); }
+                catch (Exception ex) when (!linked.IsCancellationRequested)
+                {
+                    logger.Warn($"Home Assistant registry metadata unavailable ({ex.GetType().Name}); keeping cached metadata.");
+                    metadata = MenuMetadata;
+                }
+                var replacement = new ConcurrentDictionary<string, HomeAssistantState>(
+                    snapshot.ToDictionary(state => state.EntityId, StringComparer.Ordinal), StringComparer.Ordinal);
+                var removedAt = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+                lock (_sync)
+                {
+                    if (_disposed || _generation != generation) return;
+                    foreach (HomeAssistantStateChangedEvent change in _buffer)
+                        ApplyChange(replacement, removedAt, change);
+                    _removedAt = removedAt;
+                    Volatile.Write(ref _states, replacement);
+                    Volatile.Write(ref _menuMetadata, metadata);
+                    _buffer.Clear();
+                    _buffering = false;
+                    _lastUpdatedAt = DateTimeOffset.UtcNow;
+                    synchronized = true;
+                }
+            }
+            catch
+            {
+                lock (_sync)
+                {
+                    if (!_disposed && _generation == generation)
+                    {
+                        foreach (HomeAssistantStateChangedEvent change in _buffer)
+                            ApplyChange(_states, _removedAt, change);
+                        _buffer.Clear();
+                        _buffering = false;
+                    }
+                }
+                throw;
+            }
+        }
+        finally { _synchronizationGate.Release(); }
+        if (synchronized) Notify(Synchronized);
+    }
+
     private async Task<bool> SynchronizeFromHomeAssistantAsync(CancellationToken cancellationToken)
     {
         while (true)

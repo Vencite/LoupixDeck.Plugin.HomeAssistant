@@ -2,7 +2,7 @@ using LoupixDeck.PluginSdk;
 
 namespace LoupixDeck.Plugin.HomeAssistant.Commands;
 
-internal sealed class ConnectionStatusCommand(HomeAssistantCommandAccess access) : IDisplayImageCommand
+internal sealed class ConnectionStatusCommand(HomeAssistantCommandAccess access, Func<Task> refresh) : IDisplayImageCommand
 {
     public const string Name = "HomeAssistant.ConnectionStatus";
     public CommandDescriptor Descriptor { get; } = new()
@@ -13,7 +13,7 @@ internal sealed class ConnectionStatusCommand(HomeAssistantCommandAccess access)
     };
     public ButtonTargets SupportedTargets => ButtonTargets.TouchButton;
     public TimeSpan UpdateInterval => TimeSpan.FromSeconds(30);
-    public Task Execute(CommandContext ctx) => Task.CompletedTask;
+    public Task Execute(CommandContext ctx) => refresh();
 
     public bool RenderImage(CommandContext ctx, IRenderCanvas canvas)
     {

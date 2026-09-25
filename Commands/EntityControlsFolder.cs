@@ -93,6 +93,7 @@ internal sealed class EntityControlsFolder(IPluginHost host, HomeAssistantComman
         PressButtonCommand.Name => "press",
         _ => action switch
         {
+            "On" => "power", "Off" => "power", "Toggle" => "power",
             "Open" => "up", "Close" => "down", "Stop" => "stop",
             "Lock" => "lock", "Unlock" => "unlock", "Press" => "press",
             "Play" => "play", "Pause" => "pause", "Previous" => "prev", "Next" => "next",

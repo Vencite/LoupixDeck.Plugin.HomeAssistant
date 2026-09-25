@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Net.WebSockets;
 using LoupixDeck.Plugin.HomeAssistant.Commands;
 using LoupixDeck.Plugin.HomeAssistant.HomeAssistant;
+using LoupixDeck.Plugin.HomeAssistant.Rendering;
 using LoupixDeck.PluginSdk;
 
 namespace LoupixDeck.Plugin.HomeAssistant;
@@ -119,6 +120,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
     public override void Initialize(IPluginHost host)
     {
         _host = host;
+        MdiIconCache.IconLoaded += RefreshEntityButtons;
         ScheduleSession(ReadConnectionSettings(), null);
     }
 
@@ -129,6 +131,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
     /// </summary>
     public override void Shutdown()
     {
+        MdiIconCache.IconLoaded -= RefreshEntityButtons;
         try
         {
             ShutdownCoreAsync().GetAwaiter().GetResult();
@@ -209,7 +212,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
             new IncreaseTemperatureCommand(access),
             new DecreaseTemperatureCommand(access),
             new OpenEntityControlsCommand(access, GetCommands),
-            new ConnectionStatusCommand(access)
+            new ConnectionStatusCommand(access, RefreshFromHomeAssistantAsync)
         ];
     }
 
@@ -253,6 +256,20 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
     private DateTimeOffset? GetLastEntityUpdate()
     {
         lock (_stateSync) return _store?.LastUpdatedAt;
+    }
+
+    private async Task RefreshFromHomeAssistantAsync()
+    {
+        EntityStore? store;
+        lock (_stateSync) store = _store;
+        if (store is null || GetConnectionStatus() is not null) return;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        try { await store.RefreshAsync(timeout.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (!_lifetime.IsCancellationRequested)
+        { _host?.Logger.Warn("Home Assistant refresh timed out."); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _host?.Logger.Warn($"Home Assistant refresh failed ({ex.GetType().Name})."); }
     }
 
     private HomeAssistantState? FindEntity(string entityId)

@@ -23,7 +23,7 @@ The token is masked in the editor and saved by LoupixDeck. Never put it in comma
 ## Assign buttons and dials
 
 - **Buttons:** open the action picker → **Home Assistant** → area → entity type → entity → action. Multi-action entities offer **Controls folder**: assign it to a button, then tap it on the deck to open live controls. Hidden, disabled and auxiliary entities are omitted. Available actions follow the entity's capabilities.
-- **Status:** assign **Connection status** from the Home Assistant menu to show whether HA is connected and when entity data last updated.
+- **Status:** assign **Connection status** from the Home Assistant menu to show whether HA is connected and when entity data last updated. Press it to fetch fresh entity data.
 - **Sensors:** choose **Show state** for a read-only button; sensor values include units.
 - **Brightness dial:** open rotary presets and choose **entity · Brightness**. Each tick changes brightness by 5%; pressing toggles the light. Only dimmable lights get presets; the indicator shows the cached brightness.
 - **Other controls:** climate folders show temperature up/down buttons and a live HVAC mode subfolder. Covers, fans, media players, locks, input numbers and switches also have controls folders; each action remains assignable to its own button.
@@ -38,10 +38,12 @@ Expand an entity command in the button editor. These parameters customize the pl
 | --- | --- |
 | `ShowIcon` | Show or hide the icon |
 | `Label` | Custom name; `auto` uses the entity name |
-| `Icon` | Host symbol name, such as `mdi:lightbulb`; `auto` uses the entity icon |
+| `Icon` | MDI icon name, such as `mdi:lightbulb`; `auto` uses the entity icon |
 | `StateSize`, `LabelSize` | Text size, 8–18 px |
 
 Long labels wrap to two lines and then shorten with an ellipsis. If the editor adds regular **Text** or **Symbol** layers above the plugin image, hide/remove them to reveal its state display.
+
+Find names in the [Material Design Icons catalog](https://pictogrammers.com/library/mdi/). Enter them with the `mdi:` prefix. Icons outside LoupixDeck's built-in set are downloaded on first use from Iconify and cached in memory; until they load, the button shows a fallback. An internet connection is needed for those icons after restarting the plugin.
 
 Buttons distinguish **off**, **unknown**, **unavailable**, **No state**, **Connecting**, **Reconnecting** and **Offline**. State comes from Home Assistant updates, with a five-second refresh fallback.
 
@@ -68,7 +70,7 @@ Use `[Uri]::EscapeDataString('{"brightness_pct":50}')` in PowerShell to encode a
 
 - Rotary support currently covers light brightness.
 - The generic **Call Service** button does not render live entity state or offer the entity display overrides. Actions selected from an entity menu do. Use a separate **Show state** button when needed.
-- LoupixDeck currently adds its own Text/Symbol layers when an action is assigned. The SDK has no switch to suppress these layers; hide or remove them in the button editor to reveal the plugin's image. The plugin image is a single layer, so its text and icon cannot be styled as independent host layers. Only host-supported symbols render; unknown icons use a fallback.
+- LoupixDeck currently adds its own Text/Symbol layers when an action is assigned. The SDK has no switch to suppress these layers; hide or remove them in the button editor to reveal the plugin's image. The plugin image is a single layer, so its text and icon cannot be styled as independent host layers. The SDK has no autocomplete hook for the `Icon` parameter.
 - Avoid commas, parentheses and semicolons in custom labels: they are command syntax in the host. Use `auto` instead of an empty field to preserve parameter positions.
 - Live updates request refreshes per command type, not per individual entity. Actual host redraw performance has not yet been measured.
 

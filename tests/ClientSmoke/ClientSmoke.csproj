@@ -8,5 +8,7 @@
   <ItemGroup>
     <ProjectReference Include="../../LoupixDeck.Plugin.HomeAssistant.csproj" />
     <PackageReference Include="LoupixDeck.PluginSdk" Version="1.26.0" />
+    <PackageReference Include="SkiaSharp" Version="4.151.1" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.151.1" />
   </ItemGroup>
 </Project>
