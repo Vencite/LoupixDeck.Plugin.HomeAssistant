@@ -11,7 +11,8 @@ artifacts/
 
 # Local AI / vibe-coding workspace
 AGENTS.md
-docs/
+docs/*
+!docs/images/
 _references/
 .codemap/
 .agents/

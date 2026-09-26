@@ -1,83 +1,153 @@
 # Home Assistant for LoupixDeck
 
-Control Home Assistant from [LoupixDeck](https://github.com/RadiatorTwo/LoupixDeck), with live button states and a brightness dial.
+Control Home Assistant directly from LoupixDeck with live entity states, dynamic controls and rotary support.
 
-**Early development:** no published release yet. Requires .NET 10 and a host compatible with Plugin SDK 1.26.0. Hardware behavior still needs validation in a running host.
+<p align="center">
+  <img src="docs/images/deck-overview.png" alt="Home Assistant controls on LoupixDeck" width="900">
+</p>
 
-## Build and install
+## Features
 
-```bash
-dotnet build -c Release
+- Browse Home Assistant entities by area directly in the LoupixDeck command picker.
+- Show live entity states, values and units on touch buttons.
+- Use Home Assistant and MDI icons with automatic state-aware coloring.
+- Open live control folders for devices with multiple actions.
+- Control common entities such as lights, switches, covers, climate devices, fans, media players and locks.
+- Display sensor values without creating custom commands.
+- Control dimmable light brightness from a rotary encoder.
+- Customize each button label, icon, visibility, text size, layout and icon color.
+- Use a generic Call Service command for advanced Home Assistant actions.
+
+<p align="center">
+  <img src="docs/images/entity-picker.png" alt="Home Assistant entities in the LoupixDeck command picker" width="760">
+</p>
+
+## Requirements
+
+- LoupixDeck with a Plugin SDK compatible with version 1.26.0.
+- A Home Assistant instance reachable from the computer running LoupixDeck.
+- A Home Assistant Long-Lived Access Token.
+
+## Installation
+
+Download `homeassistant-0.1.0-any.zip` from the [GitHub Releases page](https://github.com/Vencite/LoupixDeck.Plugin.HomeAssistant/releases).
+
+In LoupixDeck, open the Plugins window, go to the installed plugins page and install the downloaded ZIP. Restart LoupixDeck if requested.
+
+The release package is built by the official LoupixDeck Plugin SDK release workflow.
+
+## Connect to Home Assistant
+
+1. In Home Assistant, open your profile.
+2. Open `Security`.
+3. Create a `Long-Lived Access Token`.
+4. Open the Home Assistant plugin settings in LoupixDeck.
+5. Enter the Home Assistant URL and token, then save.
+6. Use `Test Connection` to verify the configuration.
+
+The token is stored in the LoupixDeck plugin settings. It should never be placed in button command parameters.
+
+## Add controls
+
+Open the LoupixDeck command picker and choose:
+
+`Home Assistant > Area > Entity type > Entity > Action`
+
+The available actions are generated from the entities and capabilities reported by Home Assistant.
+
+For entities with multiple useful actions, choose `Controls folder` to open a live control page on the deck.
+
+A `Connection status` command is also available. It shows the current Home Assistant connection state and the time of the last entity update.
+
+## Button customization
+
+Entity buttons can use the automatic Home Assistant presentation or override it per binding.
+
+<p align="center">
+  <img src="docs/images/button-customization.png" alt="Home Assistant button customization in LoupixDeck" width="760">
+</p>
+
+| Option | Purpose |
+| --- | --- |
+| `ShowIcon` | Show or hide the entity icon |
+| `Label` | Use a custom label, or `auto` for the Home Assistant friendly name |
+| `Icon` | Use a custom MDI icon, or `auto` for the resolved entity icon |
+| `StateSize` | Change the state text size |
+| `LabelSize` | Change the label text size |
+| `ShowLabel` | Show or hide the label |
+| `ShowState` | Show or hide the current state |
+| `Layout` | Choose the icon and text arrangement |
+| `IconColor` | Override the icon color with `#RRGGBB` |
+
+MDI icon names can be entered with the `mdi:` prefix, for example `mdi:television`.
+
+## Supported controls
+
+The exact actions shown depend on the capabilities reported by Home Assistant.
+
+| Entity type | Examples |
+| --- | --- |
+| Light | On, off, toggle, brightness |
+| Switch and input boolean | On, off, toggle |
+| Climate | Temperature controls and HVAC mode |
+| Cover | Open, close, stop and position controls when supported |
+| Fan | Power and percentage controls when supported |
+| Media player | Playback and volume controls when supported |
+| Lock | Lock and unlock |
+| Sensor | Live read-only state with unit |
+| Scene | Activate |
+| Script | Run |
+| Button | Press |
+
+### Rotary controls
+
+Dimmable lights expose a brightness dial preset.
+
+- Rotate to change brightness in 5 percent steps.
+- Press to toggle the light.
+- The dial indicator uses the cached Home Assistant brightness value.
+
+## Advanced: Call Service
+
+<details>
+<summary>Generic Home Assistant service calls</summary>
+
+The `Call Service` command is available as an escape hatch for actions that do not have a dedicated control.
+
+The current command shape is:
+
+```text
+HomeAssistant.CallService(Domain,Service,EntityId,ServiceData,Target)
 ```
 
-Copy the plugin output from `bin/Release/` and `plugin.json` into LoupixDeck's user plugin directory (`%USERPROFILE%\.config\LoupixDeck\plugins\homeassistant` on Windows), then restart LoupixDeck. Do not copy `LoupixDeck.PluginSdk.dll`; the host supplies it.
+`ServiceData` and `Target` are URI-escaped JSON objects. Use `none` when a positional value should be omitted.
 
-## Connect
-
-1. In Home Assistant, open your profile → **Security** → **Long-lived access tokens** and create a token.
-2. In LoupixDeck, open the Home Assistant plugin settings. Enter your instance URL and token, then save.
-3. Use **Test Connection** to check the saved settings or **Connection Status** to read the current connection state. The plugin reconnects automatically after temporary connection loss.
-
-The token is masked in the editor and saved by LoupixDeck. Never put it in command parameters.
-
-## Assign buttons and dials
-
-- **Buttons:** open the action picker → **Home Assistant** → area → entity type → entity → action. Multi-action entities offer **Controls folder**: assign it to a button, then tap it on the deck to open live controls. Hidden, disabled and auxiliary entities are omitted. Available actions follow the entity's capabilities.
-- **Status:** assign **Connection status** from the Home Assistant menu to show whether HA is connected and when entity data last updated. Press it to fetch fresh entity data.
-- **Sensors:** choose **Show state** for a read-only button; sensor values include units.
-- **Brightness dial:** open rotary presets and choose **entity · Brightness**. Each tick changes brightness by 5%; pressing toggles the light. Only dimmable lights get presets; the indicator shows the cached brightness.
-- **Other controls:** climate folders show temperature up/down buttons and a live HVAC mode subfolder. Covers, fans, media players, locks, input numbers and switches also have controls folders; each action remains assignable to its own button.
-
-Value actions start with a preset (for example 50% volume). Expand the assigned command to edit its service data as described below.
-
-## Customize button labels
-
-Expand an entity command in the button editor. These parameters customize the plugin image; formatting a regular host text layer does not change it:
-
-| Parameter | Effect |
-| --- | --- |
-| `ShowIcon` | Show or hide the icon |
-| `ShowLabel`, `ShowState` | Show or hide the entity name and current state independently |
-| `Label` | Custom name; `auto` uses the entity name |
-| `Icon` | MDI icon name, such as `mdi:lightbulb`; `auto` uses the entity icon |
-| `StateSize`, `LabelSize` | Text size, 8–18 px |
-| `Layout` | `Auto`, `TextTop`, `Center` or `TextBottom`; choose text above or below the icon |
-| `IconColor` | Icon color as `#RRGGBB`; `auto` follows the entity state |
-
-Long labels wrap to two lines and then shorten with an ellipsis. If the editor adds regular **Text** or **Symbol** layers above the plugin image, hide/remove them to reveal its state display.
-`Auto` centers text when the icon is hidden and centers the icon when both text parts are hidden. `TextTop` places the name and state above the icon; `TextBottom` places them below it. The new visibility and layout options are at the end of the parameter list so existing button assignments keep their values.
-
-Find names in the [Material Design Icons catalog](https://pictogrammers.com/library/mdi/). Enter them with the `mdi:` prefix. Icons outside LoupixDeck's built-in set are downloaded on first use from Iconify and cached in memory; until they load, the button shows a fallback. An internet connection is needed for those icons after restarting the plugin.
-
-Buttons distinguish **off**, **unknown**, **unavailable**, **No state**, **Connecting**, **Reconnecting** and **Offline**. State comes from Home Assistant updates, with a five-second refresh fallback.
-
-## Custom service calls
-
-Choose **Call Service** for advanced actions. Parameters are positional:
-
-`HomeAssistant.CallService(Domain,Service,EntityId,ServiceData,Target)`
-
-- `Domain` and `Service`: for example `light` and `turn_on`.
-- `EntityId`: one entity, or `none` when using `Target`.
-- `ServiceData`: a JSON object, URI-escaped; `none` omits it.
-- `Target`: a URI-escaped JSON object supporting `entity_id`, `device_id`, `area_id`, `label_id` and `floor_id`, each as a string or list. Use `none` to omit it. Do not combine it with `EntityId`.
-
-For example, 50% brightness for an illustrative light:
+Example for setting a light to 50 percent brightness:
 
 ```text
 HomeAssistant.CallService(light,turn_on,light.example,%7B%22brightness_pct%22%3A50%7D,none)
 ```
 
-Use `[Uri]::EscapeDataString('{"brightness_pct":50}')` in PowerShell to encode a JSON object. Encoding is required because the host splits command parameters at commas. Existing calls with just domain, service and entity still work.
+Existing simple calls with domain, service and entity remain supported.
+
+</details>
 
 ## Current limitations
 
-- Rotary support currently covers light brightness.
-- The generic **Call Service** button does not render live entity state or offer the entity display overrides. Actions selected from an entity menu do. Use a separate **Show state** button when needed.
-- LoupixDeck currently adds its own Text/Symbol layers when an action is assigned. The SDK has no switch to suppress these layers; hide or remove them in the button editor to reveal the plugin's image. The plugin image is a single layer, so its text and icon cannot be styled as independent host layers. The SDK has no autocomplete hook for the `Icon` parameter.
-- Avoid commas, parentheses and semicolons in custom labels: they are command syntax in the host. Use `auto` instead of an empty field to preserve parameter positions.
-- Live updates request refreshes per command type, not per individual entity. Actual host redraw performance has not yet been measured.
+- Rotary presets currently focus on light brightness.
+- LoupixDeck can add its own Text or Symbol layer when an action is assigned. If that layer covers the plugin image, hide or remove it in the button editor.
+- Custom MDI icons that are not available in the LoupixDeck built-in symbol set are fetched through Iconify and cached in memory. They may need an internet connection again after the plugin restarts.
+- Avoid commas, parentheses and semicolons in custom labels because they are part of the host command syntax.
+- The generic `Call Service` command does not provide the same live entity rendering as entity actions selected from the dynamic menu.
+
+## Development
+
+Build instructions and the release process are in [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## License
 
-Plugin code: MIT; see [LICENSE](LICENSE). The Home Assistant logo has a separate [asset attribution and license](LICENSES/home-assistant-logo.md). Developed with AI assistance.
+Plugin code is available under the MIT License. See [LICENSE](LICENSE).
+
+The Home Assistant logo has separate attribution and licensing information in [LICENSES/home-assistant-logo.md](LICENSES/home-assistant-logo.md).
+
+Developed with AI assistance.
