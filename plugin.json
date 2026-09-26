@@ -7,5 +7,6 @@
   "entryAssembly": "LoupixDeck.Plugin.HomeAssistant.dll",
   "platform": "All",
   "author": "Vencite",
-  "description": "Control Home Assistant entities directly from LoupixDeck."
+  "description": "Control Home Assistant entities directly from LoupixDeck.",
+  "projectUrl": "https://github.com/Vencite/LoupixDeck.Plugin.HomeAssistant"
 }
