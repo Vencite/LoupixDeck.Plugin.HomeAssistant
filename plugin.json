@@ -1,7 +1,7 @@
 {
   "id": "homeassistant",
   "name": "Home Assistant",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "sdkVersion": "1.26.0",
   "iconFile": "icon.png",
   "entryAssembly": "LoupixDeck.Plugin.HomeAssistant.dll",

@@ -53,10 +53,10 @@ A published GitHub Release must use the tag:
 v<plugin.json version>
 ```
 
-For version `0.1.0`, the tag is:
+For version `0.2.0`, the tag is:
 
 ```text
-v0.1.0
+v0.2.0
 ```
 
 A manual `workflow_dispatch` run can be used to validate packaging before publishing a GitHub Release.

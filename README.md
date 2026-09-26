@@ -30,7 +30,7 @@ Control Home Assistant directly from [LoupixDeck](https://github.com/RadiatorTwo
 
 ## Installation
 
-Download `homeassistant-0.1.0-any.zip` from the [GitHub Releases page](https://github.com/Vencite/LoupixDeck.Plugin.HomeAssistant/releases).
+Download the current `homeassistant-<version>-any.zip` package from the [GitHub Releases page](https://github.com/Vencite/LoupixDeck.Plugin.HomeAssistant/releases).
 
 In LoupixDeck, open the Plugins window, go to the installed plugins page and install the downloaded ZIP. Restart LoupixDeck if requested.
 

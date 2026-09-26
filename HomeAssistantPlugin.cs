@@ -63,7 +63,7 @@ public sealed class HomeAssistantPlugin : LoupixPlugin, IPluginSettingsPage, IMe
     {
         Id = "homeassistant",
         Name = "Home Assistant",
-        Version = new Version(0, 1, 0),
+        Version = new Version(0, 2, 0),
         SdkVersion = SdkInfo.Version,
         Author = "Vencite",
         Description = "Control Home Assistant entities directly from LoupixDeck.",
