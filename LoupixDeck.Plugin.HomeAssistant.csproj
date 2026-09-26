@@ -15,6 +15,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="ClientSmoke" />
     <EmbeddedResource Include="Assets/FolderIcons/*.png" />
+    <EmbeddedResource Include="Assets/Fonts/DejaVuSansMono.ttf" />
     <EmbeddedResource Include="icon.png" />
     <None Update="icon.png" CopyToOutputDirectory="PreserveNewest" />
     <PackageReference Include="LoupixDeck.PluginSdk" Version="1.26.0">

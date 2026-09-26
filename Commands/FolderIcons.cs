@@ -6,6 +6,16 @@ namespace LoupixDeck.Plugin.HomeAssistant.Commands;
 internal static class FolderIcons
 {
     private static readonly ConcurrentDictionary<string, byte[]> Cache = new(StringComparer.Ordinal);
+    private static readonly SKTypeface CaptionFont = LoadCaptionFont();
+
+    private static SKTypeface LoadCaptionFont()
+    {
+        using Stream stream = typeof(FolderIcons).Assembly.GetManifestResourceStream(
+            "LoupixDeck.Plugin.HomeAssistant.Assets.Fonts.DejaVuSansMono.ttf")
+            ?? throw new InvalidOperationException("Embedded folder caption font is missing.");
+        return SKTypeface.FromStream(stream)
+            ?? throw new InvalidOperationException("Embedded folder caption font cannot be loaded.");
+    }
 
     public static byte[]? Get(string name, string label, int textSize = 12)
     {
@@ -37,9 +47,7 @@ internal static class FolderIcons
         surface.Canvas.DrawBitmap(source, new SKRect(left, top, right + 1, bottom + 1),
             new SKRect(45 - drawWidth / 2, 34 - drawHeight / 2,
                 45 + drawWidth / 2, 34 + drawHeight / 2), SKSamplingOptions.Default);
-        using var typeface = SKTypeface.FromFamilyName("Arial") is { FamilyName.Length: > 0 } systemFont
-            ? systemFont : SKTypeface.FromFile("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
-        using var font = new SKFont(typeface, textSize) { Edging = SKFontEdging.Antialias };
+        using var font = new SKFont(CaptionFont, textSize) { Edging = SKFontEdging.Antialias };
         float width = font.MeasureText(label);
         if (width > 82) font.Size *= 82 / width;
         using var paint = new SKPaint { Color = SKColors.White, IsAntialias = true };

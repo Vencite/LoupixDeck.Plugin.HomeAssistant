@@ -260,6 +260,10 @@ internal static class CommandSmoke
             connectionCanvas.Texts.Any(text => text.Text == "Connected") &&
             connectionCanvas.Texts.Any(text => text.Text.Contains(':')),
             "connection tile shows live status and last entity update time");
+        Check(connectionCanvas.IndicatorTop >= connectionCanvas.Height / 5 &&
+            connectionCanvas.Texts.Single(text => text.Text == "Connected").Top >= connectionCanvas.Height / 2 &&
+            connectionCanvas.Texts.Single(text => text.Text.Contains(':')).Top >= connectionCanvas.Height * 3 / 4,
+            "connection tile places its icon centrally and its timestamp near the bottom");
         Check(plugin.Metadata.Icon is { Length: > 8 } logo && logo[0] == 0x89 && logo[1] == (byte)'P',
             "plugin metadata contains the Home Assistant logo");
         byte[]? mdi = MdiIconCache.Rasterize("<path d=\"M2 2h20v20H2z\"/>");

@@ -25,11 +25,11 @@ internal sealed class ConnectionStatusCommand(HomeAssistantCommandAccess access,
         int width = canvas.Width - 2 * side;
         int center = canvas.Width / 2;
         int radius = Math.Max(3, Math.Min(canvas.Width, canvas.Height) / 14);
-        canvas.FillCircle(center, Math.Max(8, canvas.Height / 7), radius, color);
-        canvas.DrawText(status, side, canvas.Height / 4, width, canvas.Height / 4,
+        canvas.FillCircle(center, canvas.Height / 3, radius, color);
+        canvas.DrawText(status, side, canvas.Height / 2, width, canvas.Height / 5,
             color, 11, TextHAlign.Center, TextVAlign.Middle, bold: true);
         string updated = access.LastUpdatedAt?.ToLocalTime().ToString("dd.MM HH:mm") ?? "No sync";
-        canvas.DrawText(updated, side, canvas.Height * 3 / 5, width, canvas.Height / 4,
+        canvas.DrawText(updated, side, canvas.Height * 4 / 5, width, canvas.Height / 6,
             new PluginColor(200, 200, 200), 10, TextHAlign.Center, TextVAlign.Middle);
         return true;
     }
