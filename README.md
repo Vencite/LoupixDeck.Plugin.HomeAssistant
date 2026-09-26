@@ -1,6 +1,6 @@
 # Home Assistant for LoupixDeck
 
-Control Home Assistant directly from LoupixDeck with live entity states, dynamic controls and rotary support.
+Control Home Assistant directly from [LoupixDeck](https://github.com/RadiatorTwo/LoupixDeck) with live entity states, dynamic controls and rotary support.
 
 <p align="center">
   <img src="docs/images/deck-overview.png" alt="Home Assistant controls on LoupixDeck" width="900">
