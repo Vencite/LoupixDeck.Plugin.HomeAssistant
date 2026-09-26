@@ -89,7 +89,7 @@ The exact actions shown depend on the capabilities reported by Home Assistant.
 | --- | --- |
 | Light | On, off, toggle, brightness |
 | Switch and input boolean | On, off, toggle |
-| Climate | Temperature controls and HVAC mode |
+| Climate | Temperature controls, HVAC mode, vertical swing and horizontal swing when supported |
 | Cover | Open, close, stop and position controls when supported |
 | Fan | Power and percentage controls when supported |
 | Media player | Playback and volume controls when supported |

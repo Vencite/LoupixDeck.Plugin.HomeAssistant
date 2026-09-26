@@ -123,7 +123,13 @@ internal static class EntityMenu
                     actions.Add(Leaf(entity, name, "Temperature −", DecreaseTemperatureCommand.Name));
                 }
                 Feature(256, "On", "turn_on"); Feature(128, "Off", "turn_off");
-                foreach (string mode in EntityCapabilities.Strings(entity, "hvac_modes")) Add(mode, "set_hvac_mode", new { hvac_mode = mode });
+                foreach (string mode in EntityCapabilities.Strings(entity, "hvac_modes"))
+                    if (mode != "off" || !EntityCapabilities.Has(entity, 128))
+                        Add(mode, "set_hvac_mode", new { hvac_mode = mode });
+                foreach (string mode in EntityCapabilities.Strings(entity, "swing_modes"))
+                    Add($"Vertical swing: {mode}", "set_swing_mode", new { swing_mode = mode });
+                foreach (string mode in EntityCapabilities.Strings(entity, "swing_horizontal_modes"))
+                    Add($"Horizontal swing: {mode}", "set_swing_horizontal_mode", new { swing_horizontal_mode = mode });
                 break;
             case "fan":
                 Feature(32, "On", "turn_on"); Feature(16, "Off", "turn_off");

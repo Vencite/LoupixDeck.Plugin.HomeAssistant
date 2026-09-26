@@ -155,29 +155,52 @@ internal static class CommandSmoke
         IFolderProvider folder = host.OpenedFolder!;
         folder.OnEnter();
         var folderEntries = folder.BuildEntries();
-        Check(folderEntries.Any(entry => entry.Text == "Mode" && entry.OpensFolder is not null) &&
+        Check(folderEntries.Any(entry => entry.Text == "HVAC mode" && entry.OpensFolder is not null) &&
+              folderEntries.Any(entry => entry.Text == "Swing ↕" && entry.OpensFolder is not null) &&
+              folderEntries.Any(entry => entry.Text == "Swing ↔" && entry.OpensFolder is not null) &&
               folderEntries.Any(entry => entry.Text == "Temp +") &&
-              folderEntries.Any(entry => entry.Text == "Temp −"), "climate folder exposes live modes and temperature steps");
+              folderEntries.Any(entry => entry.Text == "Temp −"), "climate folder exposes live modes, swing and temperature steps");
         Check(folderEntries.All(entry => entry.Text.Length <= 10 && entry.Image is { Length: > 8 } image &&
             image[0] == 0x89 && image[1] == (byte)'P'), "folder entries use short labels and embedded PNG icons");
-        Check(folderEntries.All(entry =>
+        foreach (FolderEntry entry in folderEntries)
         {
             using SKBitmap? bitmap = SKBitmap.Decode(entry.Image);
-            return bitmap is not null && bitmap.Pixels.Any(pixel => pixel.Alpha > 0);
-        }), "folder icons decode into visible pixels in the host graphics library");
+            bool iconInk = bitmap is not null && Enumerable.Range(18, 32).Any(y =>
+                Enumerable.Range(20, 50).Any(x => bitmap.GetPixel(x, y).Alpha > 0));
+            bool captionInk = bitmap is not null && Enumerable.Range(70, 18).Any(y =>
+                Enumerable.Range(5, 80).Any(x => bitmap.GetPixel(x, y).Alpha > 0));
+            Check(iconInk && captionInk && entry.TextColor.A == 0,
+                $"folder tile {entry.Text}: icon={iconInk}, caption={captionInk}, host text={entry.TextColor.A}");
+        }
         FolderEntry up = folderEntries.Single(entry => entry.Text == "Temp +");
         await up.OnPress!();
         Check(server.LastRequest.GetProperty("service_data").GetProperty("temperature").GetDouble() == 21.5,
             "folder increases the cached climate target by its supported step");
-        FolderEntry modesEntry = folderEntries.Single(entry => entry.Text == "Mode");
+        FolderEntry modesEntry = folderEntries.Single(entry => entry.Text == "HVAC mode");
         var modeFolder = modesEntry.OpensFolder!;
         FolderEntry[] modeEntries = modeFolder.BuildEntries().ToArray();
-        Check(modeEntries.Any(entry => entry.Text == "heat") && modeEntries.All(entry => entry.Image is { Length: > 8 }),
-            "HVAC modes have live entries with icons");
+        Check(modeEntries.Any(entry => entry.Text == "heat") &&
+            modeEntries.All(entry => entry.Text != "off" && entry.Image is { Length: > 8 }),
+            "HVAC modes have icons and do not duplicate the dedicated Off action");
+        Check(folderEntries.Count(entry => entry.Text == "Off") == 1, "climate has one Off action");
+        FolderEntry[] verticalSwing = folderEntries.Single(entry => entry.Text == "Swing ↕").OpensFolder!.BuildEntries().ToArray();
+        FolderEntry[] horizontalSwing = folderEntries.Single(entry => entry.Text == "Swing ↔").OpensFolder!.BuildEntries().ToArray();
+        Check(verticalSwing.Any(entry => entry.Text == "vertical") &&
+            horizontalSwing.Any(entry => entry.Text == "horizontal"), "swing folders show available modes");
+        await verticalSwing.Single(entry => entry.Text == "vertical").OnPress!();
+        Check(server.LastRequest.GetProperty("service").GetString() == "set_swing_mode" &&
+            server.LastRequest.GetProperty("service_data").GetProperty("swing_mode").GetString() == "vertical",
+            "vertical swing sends its selected mode");
+        await horizontalSwing.Single(entry => entry.Text == "horizontal").OnPress!();
+        Check(server.LastRequest.GetProperty("service").GetString() == "set_swing_horizontal_mode" &&
+            server.LastRequest.GetProperty("service_data").GetProperty("swing_horizontal_mode").GetString() == "horizontal",
+            "horizontal swing sends its selected mode");
         folder.OnExit();
         MenuNode media = domains.Single(domain => domain.Name == "Media players").Children.Single();
         await openControls.Execute(Context(host, HostParameters(openControls, media.Children.First())));
         FolderEntry[] mediaEntries = host.OpenedFolder!.BuildEntries().ToArray();
+        Check(mediaEntries[0].Text == "State off" && mediaEntries.Count(entry => entry.Text == "Off") == 1,
+            "media status is distinct from its single Off action");
         FolderEntry[] mediaActions = mediaEntries.Where(entry => entry.Text is "Play" or "Pause" or "Stop" or "Prev" or "Next").ToArray();
         Check(mediaActions.Length > 0 && mediaActions.All(entry => entry.Image is { Length: > 8 }),
             "media controls have action icons");
@@ -609,7 +632,7 @@ internal static class CommandSmoke
             State("climate.hall", "heat", "Hall Climate"),
             State("cover.blind", "open", "Blind"),
             State("fan.office", "on", "Fan"),
-            State("media_player.tv", "playing", "TV"),
+            State("media_player.tv", "off", "TV"),
             State("lock.front", "locked", "Front Lock"),
             State("input_number.target", "20", "Target")
         ];
@@ -634,6 +657,8 @@ internal static class CommandSmoke
                 attributes["min_temp"] = 16.0;
                 attributes["max_temp"] = 28.0;
                 attributes["hvac_modes"] = new[] { "off", "heat", "cool" };
+                attributes["swing_modes"] = new[] { "off", "vertical" };
+                attributes["swing_horizontal_modes"] = new[] { "off", "horizontal" };
             }
             if (entityId == "cover.blind") attributes["supported_features"] = 15;
             if (entityId == "fan.office") attributes["supported_features"] = 49;
