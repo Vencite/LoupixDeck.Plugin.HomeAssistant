@@ -47,13 +47,12 @@ internal sealed class EntityControlsFolder(IPluginHost host, HomeAssistantComman
         IReadOnlyList<MenuNode> all = EntityMenu.Actions(entity, entity.FriendlyName, includeFolder: false);
         string[] modeServices = ["set_hvac_mode", "set_swing_mode", "set_swing_horizontal_mode"];
         List<MenuNode> actions = modeService is null ? all.ToList() : all.Where(node =>
-            node.Parameters.TryGetValue("EntityId", out string? value) &&
-            value.Contains($"|{modeService}|", StringComparison.Ordinal)).ToList();
+            node.Parameters.TryGetValue("Service", out string? value) && value == modeService).ToList();
         if (modeService is null)
             foreach (string service in modeServices)
             {
-                MenuNode[] modes = actions.Where(node => node.Parameters.TryGetValue("EntityId", out string? value) &&
-                    value.Contains($"|{service}|", StringComparison.Ordinal)).ToArray();
+                MenuNode[] modes = actions.Where(node => node.Parameters.TryGetValue("Service", out string? value) &&
+                    value == service).ToArray();
                 if (modes.Length == 0) continue;
                 actions.RemoveAll(node => modes.Contains(node));
                 actions.Insert(0, new MenuNode { Name = service, Children = modes });

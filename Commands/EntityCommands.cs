@@ -183,6 +183,7 @@ internal sealed class EntityServiceCommand(HomeAssistantCommandAccess access) : 
         new CommandParameter("Service", typeof(string)) { DefaultValue = "auto" },
         new CommandParameter("ServiceData", typeof(string)) { DefaultValue = "none" });
 
+    // Saved bindings from older hosts pack entity, service and data into the first parameter.
     protected override string GetEntityId(string[] parameters) => base.GetEntityId(parameters).Split('|', 2)[0];
 
     protected override Task CallAsync(HomeAssistantClient client, string entityId, string[] parameters)

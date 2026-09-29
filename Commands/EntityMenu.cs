@@ -88,10 +88,12 @@ internal static class EntityMenu
         void Add(string label, string service, object? data = null) => actions.Add(new MenuNode
         {
             Name = $"{name} · {label}", CommandName = EntityServiceCommand.Name,
-            // Host 1.34 only preserves the first menu parameter. Carry the action there;
-            // trailing parameters remain available as explicit editor overrides.
-            Parameters = new Dictionary<string, string> { ["EntityId"] = entity.EntityId + "|" + service + "|" +
-                (data is null ? "none" : Uri.EscapeDataString(JsonSerializer.Serialize(data))) }
+            Parameters = new Dictionary<string, string>
+            {
+                ["EntityId"] = entity.EntityId,
+                ["Service"] = service,
+                ["ServiceData"] = data is null ? "none" : Uri.EscapeDataString(JsonSerializer.Serialize(data))
+            }
         });
         void Feature(int flag, string label, string service, object? data = null)
         {

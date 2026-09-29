@@ -123,10 +123,26 @@ internal static class CommandSmoke
         Check(dimmer.Children.Count == 8, "dimmable light offers a folder and brightness presets");
         var serviceCommand = commands.Single(command => command.Descriptor.CommandName == "HomeAssistant.EntityService");
         MenuNode brightnessLeaf = dimmer.Children.First(child => child.CommandName == serviceCommand.Descriptor.CommandName);
+        Check(brightnessLeaf.Parameters["EntityId"] == "light.desk" &&
+              brightnessLeaf.Parameters["Service"] == "turn_on" &&
+              brightnessLeaf.Parameters.Count == 3,
+            "new menu actions carry entity, service and data as separate named values");
         string[] serviceParameters = HostParameters(serviceCommand, brightnessLeaf);
         await serviceCommand.Execute(Context(host, serviceParameters));
         Check(server.LastRequest.GetProperty("service_data").GetProperty("brightness_pct").GetInt32() == 25,
             "entity menu action retains its service payload after display parameters");
+        var legacyParameters = serviceCommand.Descriptor.Parameters.Select(parameter => parameter.DefaultValue ?? "").ToArray();
+        legacyParameters[0] = "light.desk|turn_on|" + brightnessLeaf.Parameters["ServiceData"];
+        await serviceCommand.Execute(Context(host, legacyParameters));
+        Check(server.Calls.Last() == new ServiceCall("light", "turn_on", "light.desk") &&
+              server.LastRequest.GetProperty("service_data").GetProperty("brightness_pct").GetInt32() == 25,
+            "saved packed bindings retain their entity, service and payload");
+        legacyParameters[6] = "turn_off";
+        legacyParameters[7] = "none";
+        await serviceCommand.Execute(Context(host, legacyParameters));
+        Check(server.Calls.Last() == new ServiceCall("light", "turn_off", "light.desk") &&
+              !server.LastRequest.TryGetProperty("service_data", out _),
+            "explicit service and payload override the legacy packed action");
         serviceParameters[2] = "Desk";
         var serviceCanvas = new RecordingCanvas();
         ((IDisplayImageCommand)serviceCommand).RenderImage(Context(host, serviceParameters), serviceCanvas);
@@ -138,7 +154,7 @@ internal static class CommandSmoke
         {
             IPluginCommand assignedCommand = commands.Single(command => command.Descriptor.CommandName == leaf.CommandName);
             string[] assigned = HostParameters(assignedCommand, leaf);
-            Check(assigned.Length > 0 && assigned[0].StartsWith(leaf.Parameters.First().Value.Split('|')[0], StringComparison.Ordinal),
+            Check(assigned.Length > 0 && assigned[0] == leaf.Parameters["EntityId"],
                 $"host can assign {leaf.Name}");
         }
         Check(allLeaves.Any(leaf => leaf.Name.Contains("Temperature +")) &&
@@ -220,9 +236,8 @@ internal static class CommandSmoke
             string expectedService;
             if (leaf.CommandName == "HomeAssistant.EntityService")
             {
-                string[] parts = leaf.Parameters["EntityId"].Split('|', 3);
-                expectedDomain = parts[0].Split('.')[0];
-                expectedService = parts[1];
+                expectedDomain = leaf.Parameters["EntityId"].Split('.')[0];
+                expectedService = leaf.Parameters["Service"];
             }
             else if (leaf.CommandName is "HomeAssistant.IncreaseTemperature" or "HomeAssistant.DecreaseTemperature")
             {
@@ -433,16 +448,11 @@ internal static class CommandSmoke
         Console.WriteLine("Home Assistant command smoke check passed.");
     }
 
-    // Host 1.34 CommandBuilder uses only the first menu value, then descriptor/type defaults.
-    // Exercise assignment before execution; directly feeding MenuNode.Parameters hides crashes.
-    private static string[] HostParameters(IPluginCommand command, MenuNode leaf)
-    {
-        var assigned = new Dictionary<string, string> { [leaf.Parameters.First().Key] = leaf.Parameters.First().Value };
-        foreach (var parameter in command.Descriptor.Parameters.Skip(1))
-            assigned.Add(parameter.Name, parameter.DefaultValue ?? (parameter.ParameterType == typeof(bool) ? "False" : ""));
-        return command.Descriptor.Parameters.Select(parameter => assigned[parameter.Name])
-            .Where(value => value.Length > 0).ToArray();
-    }
+    // Entity menu keys match the declared names; mirror host PR #309 precedence.
+    private static string[] HostParameters(IPluginCommand command, MenuNode leaf) =>
+        command.Descriptor.Parameters.Select(parameter =>
+            leaf.Parameters.TryGetValue(parameter.Name, out string? value) ? value :
+                parameter.DefaultValue ?? (parameter.ParameterType == typeof(bool) ? "False" : "")).ToArray();
 
     private static CommandContext Context(RecordingHost host, params string[] parameters) => new()
     {
